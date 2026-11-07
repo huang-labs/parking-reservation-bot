@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "parking-reservation-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "parking-reservation-bot", "database_id": "45da200f-585e-4238-9920-ec0314aa9eeb", "migrations_dir": "migrations" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SCOUT", "class_name": "ScoutSession" },
+      { "name": "MONITOR", "class_name": "LotDateMonitor" },
+      { "name": "ACCOUNT", "class_name": "AccountAgent" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScoutSession", "LotDateMonitor", "AccountAgent"] }],
+  "vars": {
+    "PUBLIC_URL": "https://parking-reservation-bot.huang-inc.workers.dev"
+  }
+  // Secrets (wrangler secret put): TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, CREDS_ENC_KEY,
+  // SCOUT_EMAIL, SCOUT_PASSWORD, ADMIN_TG_USER_ID
+}
