@@ -4,6 +4,8 @@ import { decrypt, encrypt } from "../src/core/crypto";
 import { chooseRate } from "../src/core/rates";
 import { verifyInitData } from "../src/core/telegramAuth";
 import { localParts, localToUtc, watchDeadline } from "../src/core/time";
+import { settingsView } from "../src/bot/views";
+import type { User } from "../src/db/schema";
 
 describe("time (America/Denver)", () => {
   it("converts local wall-clock to UTC across DST", () => {
@@ -79,5 +81,23 @@ describe("Mini App initData", () => {
     expect(await verifyInitData(good, "123:other")).toBeNull();
     const stale = await sign({ ...params, auth_date: String(Math.floor(Date.now() / 1000) - 3600) }, "123:tok");
     expect(await verifyInitData(stale, "123:tok")).toBeNull();
+  });
+});
+
+describe("settings view", () => {
+  const user = { inflowEmail: "me@example.com", defaultPlate: "ABC123" } as User;
+  const view = settingsView(user, { carpool: { brighton: true }, accessKeys: { alta: "k" } });
+
+  it("keeps toggle rows narrow enough that Telegram doesn't truncate labels", () => {
+    for (const row of view.keyboard) expect(row.length).toBeLessThanOrEqual(2);
+    for (const b of view.keyboard.flat()) expect([...b.text].length).toBeLessThanOrEqual(16);
+  });
+  it("offers every carpool and access-key action", () => {
+    const data = view.keyboard.flat().map((b) => ("callback_data" in b ? b.callback_data : ""));
+    expect(data).toEqual(expect.arrayContaining(["sc:brighton", "sc:solitude", "sc:solitude-nordic", "skc:alta", "sk:brighton", "sk:solitude", "sk:solitude-nordic"]));
+  });
+  it("labels each section and shows current state", () => {
+    expect(view.text).toContain("<b>Carpool (4+)</b>: Brighton");
+    expect(view.text).toContain("<b>Access keys</b>: Alta");
   });
 });
