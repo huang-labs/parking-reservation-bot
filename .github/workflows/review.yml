@@ -1,0 +1,79 @@
+name: AI review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    # The trusted base workflow never checks out or executes PR code.
+    # Same-repo, non-draft PRs review automatically; push a new commit to rerun.
+    if: >-
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # Allow two 20-minute attempts plus startup/backoff for a transient retry.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    concurrency:
+      # One group per commit, so a late event for an older commit cannot cancel
+      # the newest commit's review; duplicate events for one commit replace each other.
+      group: ai-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+      cancel-in-progress: true
+    steps:
+      # Only trusted base code runs with the review/label write token.
+      - uses: useblacksmith/checkout@v1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Check head and reset override on push
+        id: head
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { prepare } = require('./.github/scripts/review-gate.cjs');
+            await prepare({ github, context, core });
+
+      - name: PR-Agent review
+        id: agent
+        if: steps.head.outputs.current == 'true' && steps.head.outputs.override != 'true'
+        continue-on-error: true
+        uses: The-PR-Agent/pr-agent@efdde4afe14aa401a3889012c7f3e9ef3081a430 # v0.49.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # GLM 5.3 on Workers AI through the `pr-agent` AI Gateway (model set in .pr_agent.toml).
+          CLOUDFLARE_API_BASE: https://gateway.ai.cloudflare.com/v1/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/pr-agent/workers-ai/v1
+          CLOUDFLARE_API_KEY: ${{ secrets.PR_AGENT_CLOUDFLARE_TOKEN }}
+          # Skip the gateway cache so re-pushing an unchanged diff reruns inference.
+          LITELLM__EXTRA_HEADERS: '{"cf-aig-skip-cache": "true"}'
+          # Read review policy from the trusted default branch, never the PR branch.
+          PR_AGENT_CONFIG_BRANCH: ${{ github.event.repository.default_branch }}
+          CONFIG__USE_GLOBAL_SETTINGS_FILE: 'false'
+          GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'true'
+          GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: 'false'
+          GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'false'
+          GITHUB_ACTION_CONFIG__ENABLE_OUTPUT: 'true'
+          GITHUB_ACTION_CONFIG__PR_ACTIONS: '["opened", "reopened", "ready_for_review", "labeled", "unlabeled"]'
+          # On push, PR-Agent runs its review tool; there is no comment command.
+          GITHUB_ACTION_CONFIG__HANDLE_PUSH_TRIGGER: 'true'
+          GITHUB_ACTION_CONFIG__PUSH_TRIGGER_IGNORE_BOT_COMMITS: 'false'
+          GITHUB_ACTION_CONFIG__PUSH_COMMANDS: '["/review"]'
+
+      - name: Enforce review result or explicit override
+        if: always() && !cancelled() && steps.head.outputs.current == 'true'
+        uses: actions/github-script@v8
+        env:
+          REVIEW_JSON: ${{ steps.agent.outputs.review }}
+          REVIEW_OUTCOME: ${{ steps.agent.outcome }}
+        with:
+          script: |
+            const { enforce } = require('./.github/scripts/review-gate.cjs');
+            await enforce({ github, context, core,
+              raw: process.env.REVIEW_JSON, outcome: process.env.REVIEW_OUTCOME });
