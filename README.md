@@ -30,17 +30,37 @@ npm run typecheck
 
 The spike CLI (`spike/`) exercises the live Inflow API against your own account. See `spike/README.md`.
 
-## Deploy
+## CI/CD
 
-Wrangler can reuse the `cf` CLI login:
+| Event | What runs |
+|---|---|
+| Pull request | `test`: typecheck, tests, review-gate tests, Worker build. `review`: PR-Agent with GLM 5.3. Nothing deploys. |
+| Push to `main` | `test`, then `deploy`: D1 migrations apply (`--remote`), the production Worker deploys, and a smoke check runs |
+
+**AI review.** `.github/workflows/review.yml` runs [PR-Agent](https://github.com/The-PR-Agent/pr-agent) on same-repo, non-draft PRs.
+It uses `@cf/zai-org/glm-5.3` on Workers AI through the account's shared `pr-agent` AI Gateway (authenticated, 100 requests/day).
+The `review` check passes only when PR-Agent returns zero findings and `no_concerns_found`. Push a commit to rerun it.
+The `ai-review-override` label bypasses AI review for the current head only. The workflow, `.github/scripts/review-gate.cjs`
+and `.pr_agent.toml` are read from `main`, so changes to them take effect after merge. The full design is in
+[mitchells-snow-report's AI review doc](https://github.com/huang-labs/mitchells-snow-report/blob/main/docs/AI_CODE_REVIEW.md).
+
+**GitHub Actions secrets:**
+
+| Secret | What it holds |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | User token "parking-reservation-bot GitHub deploy": Workers Scripts Write, D1 Write, Account Settings Read |
+| `CLOUDFLARE_ACCOUNT_ID` | Huang Labs account |
+| `PR_AGENT_CLOUDFLARE_TOKEN` | User token "parking-reservation-bot PR-Agent review": Workers AI Read, AI Gateway Run |
+
+Manual deploy, which Wrangler can run through the `cf` CLI login:
 
 ```sh
 export CLOUDFLARE_API_TOKEN="$(node -p 'require(process.env.HOME+"/.config/cloudflare/config/default.json").oauth_token')"
-npx wrangler d1 migrations apply parking-reservation-bot --remote   # when migrations/ changes
+npx wrangler d1 migrations apply parking-reservation-bot --remote
 npx wrangler deploy
 ```
 
-Secrets are set with `wrangler secret put`:
+**Worker secrets** are set once with `wrangler secret put`. Deploys keep them.
 
 | Secret | What it holds |
 |---|---|

@@ -35,7 +35,7 @@ Out of scope: Alta early-morning (Honk), date ranges, cross-resort fallback list
 | Polling identity | A dedicated **scout** Inflow account does all availability reads. If it fails, polling pauses and admin is alerted; never fall back to friends' accounts. |
 | Storage | D1 = system of record. Durable Objects (SQLite) = live coordination. No KV. |
 | Stack | TypeScript, Workers (Paid plan, owner's account), grammY, Drizzle (D1), Vitest + `@cloudflare/vitest-pool-workers`. |
-| Environments | Production only; manual `wrangler deploy`. Tests never hit live Inflow. |
+| Environments | Production only. GitHub Actions deploys every push to `main`. PRs run tests and AI review only. Tests never hit live Inflow. |
 | Time | All dates/times in `America/Denver`. Dates stored as `YYYY-MM-DD`. |
 | Retention | Expired/cancelled watches + events purged after 90 days. Bookings kept until `/logout`. |
 | Order of work | **Spike first** (§9). Nothing else is built until it passes. |
