@@ -3,3 +3,4 @@ node_modules/
 .spike-state.json
 .wrangler/
 spike/logs/
+dist/
