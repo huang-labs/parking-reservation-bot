@@ -126,20 +126,33 @@ export function watchesView(list: Watch[]): { text: string; keyboard: Keyboard }
   return { text: lines.join("\n"), keyboard: kb };
 }
 
+/** Short lot label that fits a half-width inline button on a phone. */
+const shortLot = (lot: string) => lotName(lot).replace("Solitude ", "Sol. ");
+
+/** Telegram splits a row's width evenly and middle-truncates long labels, so keep toggle rows to two buttons. */
+const rowsOf = <T>(items: T[], size = 2): T[][] =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, i * size + size));
+
 export function settingsView(user: User, prefs: UserPrefs): { text: string; keyboard: Keyboard } {
   const keys = prefs.accessKeys ?? {};
   const lines = [
     "<b>Settings</b>",
     `Inflow: ${esc(user.inflowEmail ?? "not connected")}`,
     `Default plate: <b>${esc(user.defaultPlate ?? "none")}</b>`,
-    `Carpool (4+): ${CARPOOL_LOTS.filter((l) => prefs.carpool?.[l]).map(lotName).join(", ") || "none"}`,
-    `Access keys: ${Object.keys(keys).filter((k) => keys[k]).map(lotName).join(", ") || "none"}`,
+    "",
+    `🚗 <b>Carpool (4+)</b>: ${CARPOOL_LOTS.filter((l) => prefs.carpool?.[l]).map(lotName).join(", ") || "none"}`,
+    "Tap a ⬜️/☑️ lot to prefer carpool rates there.",
+    "",
+    `🔑 <b>Access keys</b>: ${(Object.keys(LOTS) as LotKey[]).filter((k) => keys[k]).map(lotName).join(", ") || "none"}`,
+    "Tap a 🔑 lot to add its passholder code, or ✕ to remove it.",
   ];
   const kb: Keyboard = [
     [cb("🚘 Change plate", "sp")],
-    CARPOOL_LOTS.map((l) => cb(`${prefs.carpool?.[l] ? "☑️" : "⬜️"} Carpool ${lotName(l).replace("Solitude ", "Sol. ")}`, `sc:${l}`)),
-    (Object.keys(LOTS) as LotKey[]).map((l) =>
-      keys[l] ? cb(`🔑 ${lotName(l).replace("Solitude ", "Sol. ")} ✕`, `skc:${l}`) : cb(`🔑 ${lotName(l).replace("Solitude ", "Sol. ")}`, `sk:${l}`),
+    ...rowsOf(CARPOOL_LOTS.map((l) => cb(`${prefs.carpool?.[l] ? "☑️" : "⬜️"} ${shortLot(l)}`, `sc:${l}`))),
+    ...rowsOf(
+      (Object.keys(LOTS) as LotKey[]).map((l) =>
+        keys[l] ? cb(`🔑 ${shortLot(l)} ✕`, `skc:${l}`) : cb(`🔑 ${shortLot(l)}`, `sk:${l}`),
+      ),
     ),
     [cb("🔐 Re-login", "rl"), cb("🚪 Logout & wipe", "lo")],
   ];
