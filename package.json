@@ -1,0 +1,24 @@
+{
+  "name": "parking-reservation-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "spike": "tsx spike/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.0",
+    "@cloudflare/workers-types": "^5.20261107.1",
+    "@types/node": "^26.6.6",
+    "amazon-cognito-identity-js": "^6.3.22",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.158.0"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "grammy": "^1.46.0"
+  }
+}
