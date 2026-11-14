@@ -12,12 +12,12 @@ the moment someone cancels. It runs on Cloudflare Workers, D1, and Durable Objec
 ## Using it
 
 1. The admin taps **/admin → ➕ Invite** and sends a friend the one-time `t.me/...?start=<code>` link.
-2. The friend taps **🔐 Log in to Inflow** (a Mini App, so the password never appears in chat) and picks a default plate.
-3. Optional: in **/settings**, the friend adds a passholder access key per lot and toggles 4+ carpool.
+2. The friend taps **🔐 Log in to Inflow** (a Mini App, so the password never appears in chat) and picks a default plate (or adds one).
+3. Optional: in **/settings**, the friend adds a passholder access key per lot and toggles 4+ carpool. **/settings → 🚘 Plates** adds and removes plates on their Inflow account and sets the default.
 4. The friend runs **/watch**, picks a lot, taps the sold-out dates (🔴/🟡), and taps ✅. The bot books automatically
    when a spot opens. If the bank asks for 3-D Secure, the friend gets a **💳 Pay now** button and has the rest of the 10-minute hold to pay.
 
-Other commands: `/watches` (pause, resume, mode, delete), `/bookings` (list and cancel), `/status`, `/help`.
+Other commands: `/watches` (pause, resume, mode, delete), `/bookings` (list, change plate, cancel), `/status`, `/help`.
 Admin only: `/admin` (invites, users, release windows, scout re-login, 🛑 kill switch) and `/addwindow`.
 
 ## Develop

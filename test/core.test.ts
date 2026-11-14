@@ -4,6 +4,7 @@ import { decrypt, encrypt } from "../src/core/crypto";
 import { chooseRate } from "../src/core/rates";
 import { verifyInitData } from "../src/core/telegramAuth";
 import { localParts, localToUtc, watchDeadline } from "../src/core/time";
+import { canChangePlate, normalizePlate } from "../src/core/plates";
 import { settingsView } from "../src/bot/views";
 import type { User } from "../src/db/schema";
 
@@ -99,5 +100,21 @@ describe("settings view", () => {
   it("labels each section and shows current state", () => {
     expect(view.text).toContain("<b>Carpool (4+)</b>: Brighton");
     expect(view.text).toContain("<b>Access keys</b>: Alta");
+  });
+});
+
+describe("plates", () => {
+  it("normalizes like the Inflow app", () => {
+    expect(normalizePlate(" abc-123 ")).toBe("ABC123");
+    expect(normalizePlate("rental")).toBe("RENTAL");
+    expect(normalizePlate("A")).toBeNull();
+    expect(normalizePlate("ABCDEFGHIJKLM")).toBeNull();
+  });
+  it("allows plate changes until the deadline, or any time with no plate yet", () => {
+    const now = Date.parse("2027-01-16T12:00:00Z");
+    expect(canChangePlate({ plate: "ABC", allowPlateChangeUntil: "2027-01-16T20:00:00Z" }, now)).toBe(true);
+    expect(canChangePlate({ plate: "ABC", allowPlateChangeUntil: "2027-01-16T11:00:00Z" }, now)).toBe(false);
+    expect(canChangePlate({ plate: "ABC", allowPlateChangeUntil: null }, now)).toBe(false);
+    expect(canChangePlate({ plate: "UNKNOWN-1", allowPlateChangeUntil: null }, now)).toBe(true);
   });
 });

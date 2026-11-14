@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { Bot, type Context, webhookCallback } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
 import { randomId } from "../core/crypto";
+import { normalizePlate } from "../core/plates";
 import { prettyDate, today } from "../core/time";
 import { db, type DB, getConfig, getUser, getWatch, now, prefsOf, setConfig, transitionWatch, upsertWatch } from "../db/repo";
 import { events, invites, releaseWindows, uiState, type User, type UserPrefs, users, watches } from "../db/schema";
@@ -9,25 +10,30 @@ import { account, type Env, monitor, scout } from "../env";
 import { LOTS, type LotKey } from "../inflow/client";
 import { esc, type Keyboard } from "../telegram";
 import {
+  bookingsView,
   calendarView,
   HELP,
   loginKeyboard,
   lotName,
   lotPicker,
-  platePicker,
+  platesView,
+  reservationPlatePicker,
   settingsView,
   type WatchDraft,
   watchesView,
+  watchPlatePicker,
 } from "./views";
 
 type Ctx = Context & { env: Env; d: DB; user: User | null; exec: ExecutionContext };
 
 interface UiState {
   draft?: WatchDraft;
-  awaiting?: { kind: "accessKey"; lot: LotKey };
+  /** `at`: when a typed plate was requested; the request lapses after PLATE_ENTRY_MS. */
+  awaiting?: { kind: "accessKey"; lot: LotKey } | { kind: "plate"; at: number };
 }
 
 let botInfo: UserFromGetMe | undefined;
+const PLATE_ENTRY_MS = 10 * 60_000;
 
 const markup = (keyboard: Keyboard) => ({ reply_markup: { inline_keyboard: keyboard } as never });
 const isLot = (s: string): s is LotKey => s in LOTS;
@@ -127,7 +133,14 @@ export function makeBot(env: Env, exec: ExecutionContext) {
         .where(and(eq(watches.tgUserId, ctx.user!.tgUserId), eq(watches.lot, draft.lot), inArray(watches.status, ["active", "paused", "booking", "booked"])))
         .all(),
     ]);
-    const v = calendarView({ draft, availability: avail, watched: new Set(mine.map((r) => r.date)), today: today(), prefs: prefsOf(ctx.user!) });
+    const v = calendarView({
+      draft,
+      availability: avail,
+      watched: new Set(mine.map((r) => r.date)),
+      today: today(),
+      prefs: prefsOf(ctx.user!),
+      defaultPlate: ctx.user!.defaultPlate,
+    });
     if (edit) await ctx.editMessageText(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
     else await ctx.reply(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
   }
@@ -148,7 +161,7 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     const lot = ctx.match[1]!;
     if (!isLot(lot)) return ctx.answerCallbackQuery();
     const ui = await loadUi(ctx.d, ctx.user!.tgUserId);
-    ui.draft = { lot, month: today().slice(0, 7), selected: [], mode: "auto", carpool: null };
+    ui.draft = { lot, month: today().slice(0, 7), selected: [], mode: "auto", carpool: null, plate: null };
     await saveUi(ctx.d, ctx.user!.tgUserId, ui);
     await ctx.answerCallbackQuery();
     await renderCalendar(ctx, ui.draft);
@@ -168,6 +181,17 @@ export function makeBot(env: Env, exec: ExecutionContext) {
       return { ...d, carpool: !eff === def ? null : !eff };
     }),
   );
+  bot.callbackQuery("wpl", async (ctx) => {
+    const ui = await loadUi(ctx.d, ctx.user!.tgUserId);
+    if (!ui.draft) return ctx.answerCallbackQuery("That picker expired — /watch again.");
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery();
+    const { plates } = await account(env, ctx.user!.tgUserId).profile();
+    const v = watchPlatePicker(plates, ctx.user!.defaultPlate, ui.draft.plate ?? null);
+    await ctx.editMessageText(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
+  });
+  bot.callbackQuery(/^wps:([A-Z0-9]*)$/, (ctx) => withDraft(ctx, (d) => ({ ...d, plate: ctx.match[1] || null })));
+  bot.callbackQuery("wpb", (ctx) => withDraft(ctx, () => {}));
   bot.callbackQuery("wback", async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText("Which lot?", markup(lotPicker()));
@@ -187,14 +211,23 @@ export function makeBot(env: Env, exec: ExecutionContext) {
         .where(and(eq(watches.tgUserId, ctx.user!.tgUserId), eq(watches.lot, draft.lot), eq(watches.date, date)))
         .get();
       if (existing && ["booked", "booking"].includes(existing.status)) continue;
-      created.push(await upsertWatch(ctx.d, { tgUserId: ctx.user!.tgUserId, lot: draft.lot, date, mode: draft.mode, carpoolOverride: draft.carpool }));
+      created.push(
+        await upsertWatch(ctx.d, {
+          tgUserId: ctx.user!.tgUserId,
+          lot: draft.lot,
+          date,
+          mode: draft.mode,
+          carpoolOverride: draft.carpool,
+          plateOverride: draft.plate ?? null,
+        }),
+      );
       await monitor(env, draft.lot, date).ensure(draft.lot, date, { soon: true });
     }
     delete ui.draft;
     await saveUi(ctx.d, ctx.user!.tgUserId, ui);
     await ctx.answerCallbackQuery("Watching!");
     await ctx.editMessageText(
-      `👀 Watching <b>${lotName(draft.lot)}</b>: ${created.map((w) => prettyDate(w.date)).join(", ") || "nothing new"} · ${draft.mode === "auto" ? "auto-book" : "notify"}.\nIf a date already has spots I'll grab one within seconds.`,
+      `👀 Watching <b>${lotName(draft.lot)}</b>: ${created.map((w) => prettyDate(w.date)).join(", ") || "nothing new"} · ${draft.mode === "auto" ? "auto-book" : "notify"}${draft.plate ? ` · 🚘 ${esc(draft.plate)}` : ""}.\nIf a date already has spots I'll grab one within seconds.`,
       { parse_mode: "HTML" },
     );
   });
@@ -262,15 +295,50 @@ export function makeBot(env: Env, exec: ExecutionContext) {
   bot.command("bookings", async (ctx) => {
     if (!(await requireActive(ctx))) return;
     await ctx.replyWithChatAction("typing");
-    const list = await account(env, ctx.user!.tgUserId).reservations();
-    if (!list.length) return ctx.reply("No upcoming reservations.");
-    const lines = ["<b>Upcoming reservations</b>"];
-    const kb: Keyboard = [];
-    for (const r of list) {
-      lines.push(`🅿️ ${prettyDate(r.date)} · ${lotName(r.lot)} · ${esc(r.plate)} · <code>${esc(r.confirmationNumber)}</code>`);
-      if (!r.blockCancellation) kb.push([{ text: `❌ Cancel ${prettyDate(r.date)} ${lotName(r.lot)}`, callback_data: `bx:${r.reservationID}` }]);
-    }
-    await ctx.reply(lines.join("\n") + "\n\nFree cancellation until 8:00am on the day.", { parse_mode: "HTML", ...markup(kb) });
+    const v = bookingsView(await account(env, ctx.user!.tgUserId).reservations());
+    await ctx.reply(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
+  });
+
+  async function showBookings(ctx: Ctx, header = "") {
+    const v = bookingsView(await account(env, ctx.user!.tgUserId).reservations(), Date.now(), header);
+    await ctx.editMessageText(v.text, { parse_mode: "HTML", ...markup(v.keyboard) }).catch(() => {});
+  }
+
+  // 🚘 Plate: bp edits the /bookings message in place; bpa (from the 🎉 Booked alert) opens a new message.
+  bot.callbackQuery(/^(bpa?):(.+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery();
+    const agent = account(env, ctx.user!.tgUserId);
+    const [list, { plates }] = await Promise.all([agent.reservations(), agent.profile()]);
+    const r = list.find((x) => x.reservationID === ctx.match[2]);
+    const v = r ? reservationPlatePicker(r, plates) : { text: "Reservation not found (cancelled?)", keyboard: [] };
+    if (ctx.match[1] === "bp") await ctx.editMessageText(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
+    else await ctx.reply(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
+  });
+  bot.callbackQuery(/^bc:(.+):([A-Z0-9]+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery();
+    const r = (await account(env, ctx.user!.tgUserId).reservations()).find((x) => x.reservationID === ctx.match[1]);
+    if (!r) return showBookings(ctx, "Reservation not found (cancelled?)");
+    const plate = ctx.match[2]!;
+    await ctx.editMessageText(
+      `Change plate for <b>${lotName(r.lot)} · ${prettyDate(r.date)}</b>: ${esc(r.plate || "none")} → <b>${esc(plate)}</b>?`,
+      { parse_mode: "HTML", ...markup([[{ text: "Yes, change", callback_data: `bpy:${r.reservationID}:${plate}` }, { text: "Keep", callback_data: "bl" }]]) },
+    );
+  });
+  bot.callbackQuery(/^bpy:(.+):([A-Z0-9]+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery("Changing plate…");
+    const r = await account(env, ctx.user!.tgUserId).changePlate(ctx.match[1]!, ctx.match[2]!);
+    const header = r.ok
+      ? `✅ ${lotName(r.reservation.lot)} · ${prettyDate(r.reservation.date)} is now on <b>${esc(r.reservation.plate)}</b>.`
+      : `❌ ${esc(r.error)}`;
+    await showBookings(ctx, header);
+  });
+  bot.callbackQuery("bl", async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery();
+    await showBookings(ctx);
   });
 
   bot.callbackQuery(/^bx:(.+)$/, async (ctx) => {
@@ -300,19 +368,66 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     await ctx.editMessageText(v.text, { parse_mode: "HTML", ...markup(v.keyboard) }).catch(() => {});
   }
 
-  bot.callbackQuery("sp", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const { plates } = await account(env, ctx.user!.tgUserId).profile();
-    if (!plates.length) return ctx.reply("No plates on your Inflow account. Add one in the Inflow app, then try again.");
-    await ctx.reply("Pick your default plate:", markup(platePicker(plates)));
-  });
-  bot.callbackQuery(/^pl:(.+)$/, async (ctx) => {
-    await ctx.d.update(users).set({ defaultPlate: ctx.match[1]!, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
-    await ctx.answerCallbackQuery("Saved");
+  async function showPlates(ctx: Ctx, header = "", plates?: { plate: string; nickname: string }[]) {
     const u = (await getUser(ctx.d, ctx.user!.tgUserId))!;
-    const v = settingsView(u, prefsOf(u));
-    await ctx.editMessageText(`🚘 Default plate: <b>${esc(ctx.match[1]!)}</b>\n\nPasses or carpool? Set them below, then /watch.`, { parse_mode: "HTML" });
-    await ctx.reply(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
+    const list = plates ?? (await account(env, u.tgUserId).profile()).plates;
+    const v = platesView(list, u.defaultPlate, header);
+    if (ctx.callbackQuery) await ctx.editMessageText(v.text, { parse_mode: "HTML", ...markup(v.keyboard) }).catch(() => {});
+    else await ctx.reply(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
+  }
+
+  bot.callbackQuery("sp", async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery();
+    await showPlates(ctx);
+  });
+  bot.callbackQuery("sb", (ctx) => refreshSettings(ctx));
+  bot.callbackQuery(/^pl:(.+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.d.update(users).set({ defaultPlate: ctx.match[1]!, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
+    await ctx.answerCallbackQuery(`Default plate: ${ctx.match[1]}`);
+    await showPlates(ctx);
+  });
+  bot.callbackQuery("pa", async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    const ui = await loadUi(ctx.d, ctx.user!.tgUserId);
+    ui.awaiting = { kind: "plate", at: Date.now() };
+    await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Send the plate number (letters and digits, e.g. <code>ABC123</code>), or /cancel.", { parse_mode: "HTML" });
+  });
+  // Typed plates are confirmed before anything is written to Inflow.
+  bot.callbackQuery(/^pad:([A-Z0-9]+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery("Saving…");
+    const plate = ctx.match[1]!;
+    const r = await account(env, ctx.user!.tgUserId).addPlate(plate);
+    if (!r.ok) return showPlates(ctx, `❌ ${esc(r.error)} Nothing was saved.`);
+    let header = `✅ Added <b>${esc(plate)}</b> to your Inflow account.`;
+    if (!ctx.user!.defaultPlate) {
+      await ctx.d.update(users).set({ defaultPlate: plate, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
+      header += " It's your default plate.";
+    }
+    await showPlates(ctx, header, r.plates);
+  });
+  bot.callbackQuery(/^pr:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const plate = ctx.match[1]!;
+    await ctx.editMessageText(`Remove <b>${esc(plate)}</b> from your Inflow account?`, {
+      parse_mode: "HTML",
+      ...markup([[{ text: "Remove", callback_data: `pry:${plate}` }, { text: "Keep", callback_data: "sp" }]]),
+    });
+  });
+  bot.callbackQuery(/^pry:(.+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery("Removing…");
+    const plate = ctx.match[1]!;
+    const r = await account(env, ctx.user!.tgUserId).removePlate(plate);
+    if (!r.ok) return showPlates(ctx, `❌ ${esc(r.error)}`);
+    if (ctx.user!.defaultPlate === plate) {
+      await ctx.d.update(users).set({ defaultPlate: null, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
+    }
+    await showPlates(ctx, `🗑 Removed ${esc(plate)}.`, r.plates);
   });
   bot.callbackQuery(/^sc:(.+)$/, async (ctx) => {
     const prefs = prefsOf(ctx.user!);
@@ -489,6 +604,22 @@ export function makeBot(env: Env, exec: ExecutionContext) {
       await saveUi(ctx.d, ctx.user!.tgUserId, ui);
       await ctx.deleteMessage().catch(() => {});
       return ctx.reply(`🔑 Saved your ${lotName(lot)} access key. I'll apply it when booking.`);
+    }
+    if (ui.awaiting?.kind === "plate") {
+      const expired = Date.now() - ui.awaiting.at > PLATE_ENTRY_MS;
+      if (expired) {
+        delete ui.awaiting;
+        await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+      } else {
+        const plate = normalizePlate(ctx.message.text);
+        if (!plate) return ctx.reply("That doesn't look like a plate: use 2–12 letters and digits. Try again, or /cancel.");
+        delete ui.awaiting;
+        await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+        return ctx.reply(`Add <b>${esc(plate)}</b> to your Inflow account?`, {
+          parse_mode: "HTML",
+          ...markup([[{ text: "Add", callback_data: `pad:${plate}` }, { text: "Cancel", callback_data: "sp" }]]),
+        });
+      }
     }
     await ctx.reply(HELP, { parse_mode: "HTML" });
   });

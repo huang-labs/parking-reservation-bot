@@ -1,6 +1,8 @@
 /** Message text + inline keyboards. Pure functions (no I/O) so they're easy to test. */
-import { prettyDate } from "../core/time";
+import { canChangePlate } from "../core/plates";
+import { prettyDate, TZ } from "../core/time";
 import type { User, UserPrefs, Watch } from "../db/schema";
+import type { Reservation } from "../do/account";
 import { type AvailabilityStatus, LOTS, type LotKey } from "../inflow/client";
 import { type Button, esc, type Keyboard } from "../telegram";
 
@@ -13,7 +15,7 @@ export const HELP = [
   "/watch — watch sold-out dates and auto-book when a spot opens",
   "/watches — your watches",
   "/bookings — your upcoming Inflow reservations",
-  "/settings — plate, passes, carpool, logout",
+  "/settings — plates, passes, carpool, logout",
   "/status — health and next polls",
 ].join("\n");
 
@@ -35,6 +37,8 @@ export interface WatchDraft {
   mode: "auto" | "notify";
   /** null = use the user's default for this lot */
   carpool: boolean | null;
+  /** null = use the user's default plate */
+  plate?: string | null;
 }
 
 const MARK: Partial<Record<AvailabilityStatus | string, string>> = {
@@ -55,8 +59,9 @@ export function calendarView(args: {
   watched: Set<string>;
   today: string;
   prefs: UserPrefs;
+  defaultPlate?: string | null;
 }): { text: string; keyboard: Keyboard } {
-  const { draft, availability, watched, today, prefs } = args;
+  const { draft, availability, watched, today, prefs, defaultPlate = null } = args;
   const [y, m] = draft.month.split("-").map(Number) as [number, number];
   const first = new Date(Date.UTC(y, m - 1, 1));
   const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -92,6 +97,7 @@ export function calendarView(args: {
     opts.push(cb(`🚗 Carpool: ${eff ? "yes" : "no"}${draft.carpool === null ? " (default)" : ""}`, "wcp"));
   }
   kb.push(opts);
+  kb.push([cb(draft.plate ? `🚘 Plate: ${draft.plate}` : defaultPlate ? `🚘 Plate: ${defaultPlate} (default)` : "🚘 Plate: none", "wpl")]);
   kb.push([cb("↩︎ Lots", "wback"), cb(draft.selected.length ? `✅ Watch ${draft.selected.length} date${draft.selected.length > 1 ? "s" : ""}` : "Pick dates", "wok")]);
 
   const text = [
@@ -138,7 +144,7 @@ export function settingsView(user: User, prefs: UserPrefs): { text: string; keyb
   const lines = [
     "<b>Settings</b>",
     `Inflow: ${esc(user.inflowEmail ?? "not connected")}`,
-    `Default plate: <b>${esc(user.defaultPlate ?? "none")}</b>`,
+    `🚘 Default plate: <b>${esc(user.defaultPlate ?? "none")}</b>`,
     "",
     `🚗 <b>Carpool (4+)</b>: ${CARPOOL_LOTS.filter((l) => prefs.carpool?.[l]).map(lotName).join(", ") || "none"}`,
     "Tap a ⬜️/☑️ lot to prefer carpool rates there.",
@@ -147,7 +153,7 @@ export function settingsView(user: User, prefs: UserPrefs): { text: string; keyb
     "Tap a 🔑 lot to add its passholder code, or ✕ to remove it.",
   ];
   const kb: Keyboard = [
-    [cb("🚘 Change plate", "sp")],
+    [cb("🚘 Plates", "sp")],
     ...rowsOf(CARPOOL_LOTS.map((l) => cb(`${prefs.carpool?.[l] ? "☑️" : "⬜️"} ${shortLot(l)}`, `sc:${l}`))),
     ...rowsOf(
       (Object.keys(LOTS) as LotKey[]).map((l) =>
@@ -159,6 +165,77 @@ export function settingsView(user: User, prefs: UserPrefs): { text: string; keyb
   return { text: lines.join("\n"), keyboard: kb };
 }
 
-export function platePicker(plates: { plate: string; nickname: string }[]): Keyboard {
-  return [plates.map((p) => cb(`${p.plate}${p.nickname ? ` (${p.nickname})` : ""}`, `pl:${p.plate}`))];
+type PlateOption = { plate: string; nickname: string };
+const plateLabel = (p: PlateOption) => `${p.plate}${p.nickname ? ` (${p.nickname})` : ""}`;
+
+/** /settings → Plates: the Inflow account's saved plates, the default, add and remove. */
+export function platesView(plates: PlateOption[], defaultPlate: string | null, header = ""): { text: string; keyboard: Keyboard } {
+  const lines = [
+    header,
+    "<b>🚘 Plates</b> (saved on your Inflow account)",
+    plates.length ? "Tap a plate to make it the default." : "No saved plates yet. Add one below.",
+    plates.length && !(defaultPlate && plates.some((p) => p.plate === defaultPlate)) ? "<i>No default plate: tap one to set it.</i>" : "",
+  ];
+  const kb: Keyboard = plates.map((p) => [
+    p.plate === defaultPlate ? cb(`⭐ ${plateLabel(p)} · default`, "nop") : cb(plateLabel(p), `pl:${p.plate}`),
+    cb("🗑", `pr:${p.plate}`),
+  ]);
+  kb.push([cb("➕ Add plate", "pa"), cb("↩︎ Back", "sb")]);
+  return { text: lines.filter(Boolean).join("\n"), keyboard: kb };
+}
+
+/** /watch → 🚘 Plate: default or one saved plate for the dates being added. Adding plates happens in /settings. */
+export function watchPlatePicker(plates: PlateOption[], defaultPlate: string | null, chosen: string | null): { text: string; keyboard: Keyboard } {
+  const kb: Keyboard = [];
+  if (defaultPlate) kb.push([cb(`${chosen ? "" : "✅ "}Default (${defaultPlate})`, "wps:")]);
+  for (const p of plates) {
+    if (p.plate === defaultPlate) continue;
+    kb.push([cb(`${chosen === p.plate ? "✅ " : ""}${plateLabel(p)}`, `wps:${p.plate}`)]);
+  }
+  kb.push([cb("↩︎ Back", "wpb")]);
+  const text = kb.length > 1 ? "Which plate should I book these dates with?" : "No plates to pick from. Add one in /settings.";
+  return { text, keyboard: kb };
+}
+
+const DAY_SHORT = (date: string) => prettyDate(date).replace(/^\w+, /, ""); // "Sun, Apr 25" → "Apr 25"
+const localTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).replace(" ", "").toLowerCase();
+const localDate = (iso: string) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date(iso));
+
+/** /bookings: upcoming reservations with plate-change and cancel buttons. */
+export function bookingsView(list: Reservation[], now = Date.now(), header = ""): { text: string; keyboard: Keyboard } {
+  if (!list.length) return { text: [header, "No upcoming reservations."].filter(Boolean).join("\n\n"), keyboard: [] };
+  const lines = [header, "<b>Upcoming reservations</b>"].filter(Boolean);
+  const kb: Keyboard = [];
+  const dateCount = new Map<string, number>();
+  for (const r of list) dateCount.set(r.date, (dateCount.get(r.date) ?? 0) + 1);
+  for (const r of list) {
+    const changeable = canChangePlate(r, now);
+    const until = r.allowPlateChangeUntil
+      ? localDate(r.allowPlateChangeUntil) === r.date
+        ? localTime(r.allowPlateChangeUntil)
+        : `${DAY_SHORT(localDate(r.allowPlateChangeUntil))} ${localTime(r.allowPlateChangeUntil)}`
+      : "";
+    lines.push(
+      `🅿️ ${prettyDate(r.date)} · ${lotName(r.lot)} · ${esc(r.plate || "no plate")} · <code>${esc(r.confirmationNumber)}</code>\n` +
+        `    ${changeable ? (until ? `plate changeable until ${until}` : "plate changeable") : "plate locked"}`,
+    );
+    const tag = `${DAY_SHORT(r.date)}${(dateCount.get(r.date) ?? 0) > 1 ? ` ${shortLot(r.lot)}` : ""}`;
+    const row: Button[] = [];
+    if (changeable) row.push(cb(`🚘 Plate · ${tag}`, `bp:${r.reservationID}`));
+    if (!r.blockCancellation) row.push(cb(`❌ Cancel · ${tag}`, `bx:${r.reservationID}`));
+    if (row.length) kb.push(row);
+  }
+  return { text: lines.join("\n") + "\n\nFree cancellation until 8:00am on the day.", keyboard: kb };
+}
+
+/** /bookings → 🚘 Plate: pick one of the saved plates for a reservation. */
+export function reservationPlatePicker(r: Reservation, plates: PlateOption[]): { text: string; keyboard: Keyboard } {
+  const where = `${lotName(r.lot)} · ${prettyDate(r.date)}`;
+  if (!plates.length) return { text: `No saved plates. Add one in /settings.`, keyboard: [[cb("↩︎ Back", "bl")]] };
+  const kb: Keyboard = plates.map((p) =>
+    p.plate === r.plate ? [cb(`✅ ${plateLabel(p)} · current`, "nop")] : [cb(plateLabel(p), `bc:${r.reservationID}:${p.plate}`)],
+  );
+  kb.push([cb("↩︎ Back", "bl")]);
+  return { text: `🚘 New plate for <b>${where}</b> (now ${esc(r.plate || "none")}):`, keyboard: kb };
 }

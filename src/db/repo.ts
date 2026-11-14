@@ -62,7 +62,7 @@ export async function transitionWatch(
 /** Create (or re-activate) a watch. */
 export async function upsertWatch(
   d: DB,
-  w: { tgUserId: number; lot: string; date: string; mode: "auto" | "notify"; carpoolOverride?: boolean | null },
+  w: { tgUserId: number; lot: string; date: string; mode: "auto" | "notify"; carpoolOverride?: boolean | null; plateOverride?: string | null },
 ): Promise<t.Watch> {
   const ts = now();
   const rows = await d
@@ -75,6 +75,7 @@ export async function upsertWatch(
       mode: w.mode,
       status: "active",
       carpoolOverride: w.carpoolOverride == null ? null : Number(w.carpoolOverride),
+      plateOverride: w.plateOverride ?? null,
       createdAt: ts,
       updatedAt: ts,
     })
@@ -85,6 +86,7 @@ export async function upsertWatch(
         status: "active",
         pauseReason: null,
         carpoolOverride: w.carpoolOverride == null ? null : Number(w.carpoolOverride),
+        plateOverride: w.plateOverride ?? null,
         updatedAt: ts,
       },
     })
