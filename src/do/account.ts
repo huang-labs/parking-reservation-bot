@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { and, eq, inArray } from "drizzle-orm";
-import { attemptBooking, type BookingOutcome, type Handoff, pollConfirm } from "../core/booking";
+import { attemptBooking, type BookingOutcome, CARD_REASONS, type Handoff, pollConfirm } from "../core/booking";
 import { USER_REASON_TEXT } from "../core/classify";
 import { decrypt, encrypt, randomId } from "../core/crypto";
 import { prettyDate } from "../core/time";
@@ -49,6 +49,21 @@ export type AttemptResult = { kind: "skipped"; why: string } | BookingOutcome;
 /** Lots with distinct Inflow locations (Solitude & Nordic share one). */
 const LOCATION_LOTS: LotKey[] = ["alta", "brighton", "solitude"];
 const LOST_NOTIFY_EVERY_MS = 30 * 60_000;
+
+/** Why a hold was handed to the user instead of paid headlessly, in plain language. */
+function handoffWhy(reason: string, detail?: string): string {
+  switch (reason) {
+    case "3DS":
+      return "Your bank wants to verify this payment.";
+    case "NoSavedCard":
+    case "NoCustomerSession":
+      return "There's no card saved on your Inflow account, so I couldn't pay automatically.";
+    case "CardFailed":
+      return detail ? `Your saved card couldn't be charged: ${esc(detail)}` : "Your saved card couldn't be charged.";
+    default:
+      return "I couldn't pay automatically.";
+  }
+}
 
 /** One per Telegram user. Holds their Inflow credentials and serializes all their Inflow calls. */
 export class AccountAgent extends DurableObject<Env> {
@@ -214,8 +229,7 @@ export class AccountAgent extends DurableObject<Env> {
         await this.ctx.storage.put("pending", p);
         await this.ctx.storage.setAlarm(o.holdUntil + 15_000);
         const mins = Math.max(1, Math.round((o.holdUntil - Date.now()) / 60_000));
-        const why = o.reason === "3DS" ? "Your bank wants to verify this payment." : "I couldn't pay automatically.";
-        await send(this.env, ctx.chatId, `⏳ Holding ${where} · $${o.amount}\n${why} Pay within ~${mins} min to keep it.`, {
+        await send(this.env, ctx.chatId, `⏳ Holding ${where} · $${o.amount}\n${handoffWhy(o.reason, o.detail)} Pay within ~${mins} min to keep it.`, {
           keyboard: [[{ text: "💳 Pay now", web_app: { url: `${this.env.PUBLIC_URL}/miniapp/pay?t=${p.payToken}` } }]],
         });
         return;
@@ -354,13 +368,28 @@ export class AccountAgent extends DurableObject<Env> {
       if (await this.finishPending(p)) return;
       await this.ctx.storage.delete("pending");
       const d = db(this.env.DB);
-      await transitionWatch(d, p.watchId, ["booking"], "active");
       const watch = await getWatch(d, p.watchId);
+      // Without a usable card every auto attempt would just take another unpaid hold (and keep the
+      // spot from other watchers), so an auto watch falls back to alerts until the user fixes the card.
+      const cardProblem = CARD_REASONS.includes(p.reason);
+      const toNotify = cardProblem && watch?.mode === "auto";
+      await transitionWatch(d, p.watchId, ["booking"], "active", toNotify ? { mode: "notify" } : {});
       const user = watch && (await getUser(d, watch.tgUserId));
       if (user) {
-        await send(this.env, user.chatId, `⌛ Hold on <b>${LOTS[p.lot].name}</b> · ${prettyDate(p.date)} expired. Still watching.`, {
-          silent: true,
-        });
+        const where = `<b>${LOTS[p.lot].name}</b> · ${prettyDate(p.date)}`;
+        const fix = p.reason === "CardFailed" ? "Update your card" : "Add a card";
+        if (toNotify) {
+          await send(
+            this.env,
+            user.chatId,
+            `⌛ Hold on ${where} expired unpaid. ${handoffWhy(p.reason, p.detail)}\n\n` +
+              `I switched this date to 🔔 alerts so I stop holding spots you can't pay for. ` +
+              `${fix} at inflowparking.com, then switch it back to ⚡ auto-book in /watches.`,
+          );
+        } else {
+          const hint = cardProblem ? ` ${fix} at inflowparking.com so I can pay automatically next time.` : "";
+          await send(this.env, user.chatId, `⌛ Hold on ${where} expired. Still watching.${hint}`, { silent: true });
+        }
       }
     });
   }

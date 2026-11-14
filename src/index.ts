@@ -1,6 +1,6 @@
 import { and, eq, inArray, lt, lte, or } from "drizzle-orm";
 import { handleWebhook } from "./bot/bot";
-import { platePicker } from "./bot/views";
+import { CARD_NOTE, platePicker } from "./bot/views";
 import { verifyInitData } from "./core/telegramAuth";
 import { localParts, today } from "./core/time";
 import { db, getUser, logEvent, now } from "./db/repo";
@@ -41,13 +41,13 @@ async function miniAppLogin(req: Request, env: Env): Promise<Response> {
     .set({ inflowEmail: body.email, status: "active", defaultPlate, updatedAt: now() })
     .where(eq(users.tgUserId, user.tgUserId));
   await logEvent(d, "connected", { plates: plates.length }, { tgUserId: user.tgUserId });
-  const hi = `✅ Connected${r.firstName ? `, ${esc(r.firstName)}` : ""}!`;
+  const hi = `✅ Connected${r.firstName ? `, ${esc(r.firstName)}` : ""}!\n${CARD_NOTE}\n\n`;
   if (defaultPlate) {
-    await send(env, user.chatId, `${hi} Default plate: <b>${esc(defaultPlate)}</b> (change in /settings).\n\nNext: /watch to pick dates. Passholder code or carpool? Set it in /settings.`);
+    await send(env, user.chatId, `${hi}Default plate: <b>${esc(defaultPlate)}</b> (change in /settings).\n\nNext: /watch to pick dates. Passholder code or carpool? Set it in /settings.`);
   } else if (plates.length) {
-    await send(env, user.chatId, `${hi} Pick your default plate:`, { keyboard: platePicker(plates) });
+    await send(env, user.chatId, `${hi}Pick your default plate:`, { keyboard: platePicker(plates) });
   } else {
-    await send(env, user.chatId, `${hi} Your Inflow account has no saved plates — add one in the Inflow app, then /settings → Change plate.`);
+    await send(env, user.chatId, `${hi}Your Inflow account has no saved plates — add one in the Inflow app, then /settings → Change plate.`);
   }
   return json({ ok: true });
 }

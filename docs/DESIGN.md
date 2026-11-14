@@ -29,7 +29,7 @@ Out of scope: Alta early-morning (Honk), date ranges, cross-resort fallback list
 | Watch | Exactly one `(lot, date)`. Multiple dates can be added in one flow. Mode: `auto` (default) or `notify` (alert + "Book now" button). |
 | Contention | When a spot appears, every watcher's agent fires **in parallel**; Inflow arbitrates. |
 | ToS | Automation violates Inflow ToS. Accepted moderate risk. Traffic stays human-paced and deduplicated (one poll per lot-date regardless of watcher count). If a captcha ever appears, we do not solve it — degrade to notify mode. |
-| Payment | Hold → try headless Stripe confirm with saved card → if `requires_action` (3DS) or failure, push "💳 Pay now" with hold countdown. Free rates skip Stripe. |
+| Payment | Hold → try headless Stripe confirm with saved card → if `requires_action` (3DS) or failure, push "💳 Pay now" with hold countdown and the reason in plain language (bank verification, no saved card, or Stripe's decline message). Free rates skip Stripe. If a hold handed off for a card problem (`NoSavedCard`, `NoCustomerSession`, `CardFailed`) expires unpaid, that one auto watch switches to `notify`, so it stops taking unpaid holds that block other watchers; the user switches it back in `/watches`. |
 | Rate prefs | Per-user prefs (pass access keys, carpool per lot); watch may override. Bot picks the cheapest rate the user qualifies for. |
 | Plate | Default plate picked from Inflow `savedPlates` at onboarding; watch may override. |
 | Polling identity | A dedicated **scout** Inflow account does all availability reads. If it fails, polling pauses and admin is alerted; never fall back to friends' accounts. |
@@ -127,7 +127,8 @@ idle ─▶ fresh welcome session (POST /welcome, lot qr)
           └ setup: /setup-intent ─▶ Stripe confirmSetup ─▶ /confirm-setup-intent ─▶ BOOKED | HANDOFF
 HANDOFF: push "⏳ Holding … [💳 Pay now]" — a Worker-served Mini App running Stripe.js with the bot's
          client secret + customer session (handles 3DS via handleNextAction, or lets the user pick a card).
-         On success → /confirm-payment → BOOKED. Agent alarm at hold expiry → back to active.
+         On success → /confirm-payment → BOOKED. Agent alarm at hold expiry → back to active
+         (card-problem handoff on an auto watch → active in notify mode).
          (An Inflow deep link can't work: the hold lives on the bot's server-side session.)
 ```
 
@@ -195,7 +196,8 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 **Onboarding** — `/start <code>`:
 1. "Welcome! First, connect your Inflow account." `[🔐 Log in to Inflow]` (Mini App).
 2. On success: "Pick your default plate:" `[ABC123] [XYZ789]` (from `savedPlates`; if
-   none: "Add a plate in the Inflow app, then tap [🔄 Retry]").
+   none: "Add a plate in the Inflow app, then tap [🔄 Retry]"). The connected message also
+   says auto-book pays with the card saved on the Inflow account (same note in `/help`).
 3. "Any passes or carpool?" toggles: `[Alta access key…] [Brighton carpool ☐] [Solitude carpool ☐]` `[Done]`.
 4. "All set. Tap /watch to start."
 
@@ -225,6 +227,7 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 **Push alerts:**
 - `🎉 Booked Alta · Sat Jan 16 · $25 · ABC123` `[View] [❌ Cancel]`
 - `⏳ Holding Alta Sat Jan 16 — pay within 4:00` `[💳 Pay now]`
+- `⌛ Hold on Alta Sat Jan 16 expired unpaid. There's no card saved… switched this date to 🔔 alerts`
 - `👀 Spot open: Brighton Sat Jan 16` `[⚡ Book now]` (notify mode)
 - `⏸ Paused Alta Jan 16: account at max 4 reservations` `[▶️ Resume]`
 - `🔐 Inflow login expired` `[Log in]`

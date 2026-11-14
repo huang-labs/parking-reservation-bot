@@ -49,11 +49,11 @@ export async function transitionWatch(
   id: string,
   from: t.WatchStatus[],
   to: t.WatchStatus,
-  extra: Partial<Pick<t.Watch, "pauseReason">> = {},
+  extra: Partial<Pick<t.Watch, "pauseReason" | "mode">> = {},
 ): Promise<boolean> {
   const res = await d
     .update(t.watches)
-    .set({ status: to, updatedAt: now(), pauseReason: extra.pauseReason ?? null })
+    .set({ status: to, updatedAt: now(), pauseReason: extra.pauseReason ?? null, ...(extra.mode ? { mode: extra.mode } : {}) })
     .where(and(eq(t.watches.id, id), inArray(t.watches.status, from)))
     .returning({ id: t.watches.id });
   return res.length > 0;

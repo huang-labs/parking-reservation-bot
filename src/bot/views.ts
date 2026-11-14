@@ -8,6 +8,9 @@ export const CARPOOL_LOTS: LotKey[] = ["brighton", "solitude", "solitude-nordic"
 export const lotName = (lot: string) => LOTS[lot as LotKey]?.name ?? lot;
 const cb = (text: string, data: string): Button => ({ text, callback_data: data });
 
+export const CARD_NOTE =
+  "💳 Auto-book pays with the card saved on your Inflow account. No card yet? Add one at inflowparking.com, otherwise I can only hold a spot and ask you to pay.";
+
 export const HELP = [
   "<b>Commands</b>",
   "/watch — watch sold-out dates and auto-book when a spot opens",
@@ -15,6 +18,8 @@ export const HELP = [
   "/bookings — your upcoming Inflow reservations",
   "/settings — plate, passes, carpool, logout",
   "/status — health and next polls",
+  "",
+  CARD_NOTE,
 ].join("\n");
 
 export function loginKeyboard(publicUrl: string): Keyboard {

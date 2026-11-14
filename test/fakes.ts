@@ -8,7 +8,9 @@ export interface Scenario {
   rates: { id: string; name: string; price: number; status?: string }[];
   selectFail?: string; // failReason for /select-rate
   paymentFlow?: "PaymentIntent" | "SetupIntent" | "Free";
-  stripeStatus?: "succeeded" | "requires_action";
+  stripeStatus?: "succeeded" | "requires_action" | "declined";
+  noCards?: boolean; // Stripe elements session lists no saved payment methods
+  confirmFail?: string; // failReason for /confirm-payment (e.g. an unpaid hold that expired)
   cognitoFail?: boolean;
   holdSentinel?: boolean;
 }
@@ -52,8 +54,11 @@ export function installFake(s: Scenario): Recorder {
       return new Response('var k="pk_live_51FAKEFAKEFAKEFAKEFAKEFAKE";');
     }
     if (url.hostname === "api.stripe.com") {
-      if (url.pathname.endsWith("/elements/sessions")) return ok({ customer: { payment_methods: [{ id: "pm_1", card: { brand: "visa", last4: "4242" } }] } });
+      if (url.pathname.endsWith("/elements/sessions")) {
+        return ok({ customer: { payment_methods: s.noCards ? [] : [{ id: "pm_1", card: { brand: "visa", last4: "4242" } }] } });
+      }
       if (url.pathname.endsWith("/confirm")) {
+        if (s.stripeStatus === "declined") return ok({ error: { type: "card_error", code: "card_declined", message: "Your card was declined." } });
         return ok(s.stripeStatus === "requires_action" ? { status: "requires_action", next_action: { type: "use_stripe_sdk" } } : { status: "succeeded" });
       }
     }
@@ -101,7 +106,7 @@ export function installFake(s: Scenario): Recorder {
             : ok({ requiresPayment: true, clientSecret: "pi_123_secret_abc", customerSessionClientSecret: "cuss_1" });
         case "/confirm-payment":
         case "/confirm-setup-intent":
-          return ok({ receiptID: "RCPT1" });
+          return s.confirmFail ? fail(s.confirmFail) : ok({ receiptID: "RCPT1" });
         case "/current-reservations":
           return ok({ reservations: [] });
         case "/account":

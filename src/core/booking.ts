@@ -33,7 +33,12 @@ export interface Handoff {
   setup: boolean;
   holdUntil: number;
   reason: string;
+  /** Stripe's human-readable decline message, for `CardFailed`. */
+  detail?: string;
 }
+
+/** Handoff reasons meaning the account has no usable saved card. */
+export const CARD_REASONS = ["NoSavedCard", "NoCustomerSession", "CardFailed"];
 
 export type BookingOutcome =
   | { kind: "booked"; receiptID: string; amount: number; rateName: string; plate: string; sessionToken: string }
@@ -106,7 +111,7 @@ export async function attemptBooking(req: BookingRequest, deps: BookingDeps): Pr
       return { kind: "booked", receiptID, sessionToken: token, ...base };
     }
 
-    const handoff = (reason: string): BookingOutcome => ({
+    const handoff = (reason: string, detail?: string): BookingOutcome => ({
       kind: "handoff",
       sessionToken: token,
       clientSecret: intent.clientSecret!,
@@ -114,6 +119,7 @@ export async function attemptBooking(req: BookingRequest, deps: BookingDeps): Pr
       setup,
       holdUntil,
       reason,
+      ...(detail ? { detail } : {}),
       ...base,
     });
 
@@ -136,7 +142,10 @@ export async function attemptBooking(req: BookingRequest, deps: BookingDeps): Pr
     });
     log("stripe", out.kind);
     if (out.kind === "requires_action") return handoff("3DS");
-    if (out.kind === "failed") return handoff("CardFailed");
+    if (out.kind === "failed") {
+      const message = (out.error as { message?: unknown } | undefined)?.message;
+      return handoff("CardFailed", typeof message === "string" ? message.slice(0, 200) : undefined);
+    }
 
     const receiptID = await pollConfirm(s, setup, sleep);
     if (!receiptID) return handoff("ConfirmTimeout");
