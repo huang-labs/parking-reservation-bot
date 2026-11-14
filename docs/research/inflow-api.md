@@ -107,11 +107,29 @@ Headers the SPA sends: `Accept: application/json`, `Content-Type: application/js
 | `POST /current-reservations` | `{cognitoIDToken, locationID\|null}` | Returns `{reservations: ReservationMini[]}`. |
 | `POST /past-reservations` | same | |
 | `POST /cancel-reservation` | `{cognitoIDToken, reservationID, locationID, enterpriseID}` | Fail reason: `CancellationBlocked`. |
-| `POST /plate-update` | | Fail reasons: `WindowClosed`, `ReservationExistsForPlate`, `ReservationNotActive`. |
+| `POST /plate-update` | `{newPlate, reservationID, receiptID}` | Changes the plate on a booked reservation; `receiptID` is the last entry of the reservation's `receiptIDs`. Returns `{newReceiptMini}`; `receiptIDs` stay the same. **Verified 2026-11-14:** works with or without the welcome Bearer and with no `cognitoIDToken`. Fail reasons: `Unauthorized`, `SystemError`, `InvalidRequestFormat`, `WindowClosed`, `InvalidPlate`, `ReservationExistsForPlate`, `ReservationNotActive`. |
 
-Shared or gated endpoints: `/account` (`{cognitoIDToken}` returns the inflowUser, including savedPlates), `/appuser` (PUT), `/saved-payment-methods`,
+Shared or gated endpoints: `/account` (`{cognitoIDToken}` returns the inflowUser, including savedPlates), `/appuser` (PUT; see below), `/saved-payment-methods`,
 `/saved-payment-method-actions` (ADD / DELETE / MAKE_DEFAULT), `/setup-intent-wallet`, `/confirm-setup-intent-wallet`,
 `/auto-pay-select-card`, `/email`, `/text`, `/receipt`.
+
+### Plates **[V]**
+- **Saved plates** are `{plate, nickname, state, lastUsed}` on the inflowUser. `state` is a hidden field
+  that is always `"XX"`. The client sets no limit on how many plates an account can save.
+- **Editing them:** there's no per-plate endpoint. The SPA rewrites the whole record with gated
+  `PUT /appuser {cognitoIDToken, ...inflowUser, savedPlates}`, which returns `{appUser}`. Fail reasons:
+  `SystemError`, `Unauthorized`, `UserNotFound`, `InvalidRequestFormat`, `PhoneNumberInUse`, `InvalidPhoneNumber`.
+  Verified 2026-11-14: re-sending `/account`'s record with only `savedPlates` changed adds or removes a plate
+  and leaves every other field unchanged. `locationID` and `enterpriseID` are not needed.
+- **Plate format:** the SPA uppercases plates and strips non-alphanumerics, then requires 2–18 characters
+  of `A-Z0-9`. Its input box caps entry at 12 characters.
+- **Booking:** `/plate` in the booking flow does not save the plate to the account.
+- **Changing a reservation's plate** (SPA `canChangeVehicle`): only on an upcoming or in-progress reservation.
+  Allowed any time if it has no plate (empty or `UNKNOWN…`), otherwise until `allowPlateChangeUntil`.
+  On Alta that is the end of the reservation window (1:00pm), which is later than the 8:00am cancel cutoff.
+- **Authorization on `/plate-update`:** the call succeeded with no Bearer and no Cognito token. Inflow
+  appears to authorize it by the reservation ID and receipt ID alone. The bot only calls it for
+  reservations it has just read from the user's own `/current-reservations`.
 
 ### Key data shapes (from source and enums) **[V]**
 - `ReservationDateAvailabilityStatus`: `Available | Full | FullButNotAllConfirmed | NotRequired | NoInventoryActive | ComingSoon | Closed`.

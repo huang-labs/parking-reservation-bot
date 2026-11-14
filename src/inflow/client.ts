@@ -79,12 +79,12 @@ export class InflowSession {
   async call<T = Record<string, unknown>>(
     path: string,
     body: Record<string, unknown> = {},
-    { auth = false, base = RESERVE_API }: { auth?: boolean; base?: string } = {},
+    { auth = false, base = RESERVE_API, method = "POST" }: { auth?: boolean; base?: string; method?: "POST" | "PUT" } = {},
   ): Promise<T> {
     const payload = auth ? { cognitoIDToken: await this.getIdToken(), ...body } : body;
     const t0 = Date.now();
     const res = await (this.opts.fetch ?? fetch)(`${base}${path}`, {
-      method: "POST",
+      method,
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -177,8 +177,35 @@ export class InflowSession {
   }
 
   account() {
-    return this.call("/account", {}, { auth: true, base: GATED_API });
+    return this.call<InflowUser>("/account", {}, { auth: true, base: GATED_API });
   }
+
+  /**
+   * Replace the whole Inflow user record (gated `PUT /appuser`), as the Inflow app does to edit saved plates.
+   * Pass the record exactly as `/account` returned it, changing only what should change.
+   */
+  updateAppUser(user: InflowUser) {
+    return this.call("/appuser", { ...user }, { auth: true, base: GATED_API, method: "PUT" });
+  }
+
+  /** Change the plate on a booked reservation. `receiptID` is the reservation's latest receipt. */
+  plateUpdate(args: { newPlate: string; reservationID: string; receiptID: string }) {
+    return this.call("/plate-update", args);
+  }
+}
+
+export interface SavedPlate {
+  plate: string;
+  nickname?: string;
+  state?: string;
+  lastUsed?: string;
+}
+
+/** Inflow user record from gated `/account`. Other fields pass through untouched on `PUT /appuser`. */
+export interface InflowUser {
+  first?: string;
+  savedPlates?: SavedPlate[];
+  [k: string]: unknown;
 }
 
 /** Claims of the (unverified) welcome session JWT: enterpriseID, marketID, locationID, exp... */

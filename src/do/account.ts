@@ -2,12 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import { and, eq, inArray } from "drizzle-orm";
 import { attemptBooking, type BookingOutcome, type Handoff, pollConfirm } from "../core/booking";
 import { USER_REASON_TEXT } from "../core/classify";
+import { canChangePlate, plateUpdateError } from "../core/plates";
 import { decrypt, encrypt, randomId } from "../core/crypto";
 import { prettyDate } from "../core/time";
 import { db, getUser, getWatch, logEvent, now, prefsOf, transitionWatch } from "../db/repo";
 import { bookings, users, watches } from "../db/schema";
 import type { Env } from "../env";
-import { InflowSession, LOTS, type LotKey, sessionClaims } from "../inflow/client";
+import { InflowError, InflowSession, type InflowUser, LOTS, type LotKey, sessionClaims } from "../inflow/client";
 import { CognitoError, jwtClaims, login, refresh } from "../inflow/cognito";
 import { findPublishableKey } from "../inflow/stripe";
 import { esc, send } from "../telegram";
@@ -42,7 +43,12 @@ export interface Reservation {
   locationID: string;
   enterpriseID: string;
   rateName: string;
+  /** Latest receipt; `/plate-update` needs it. */
+  receiptID: string;
+  allowPlateChangeUntil: string | null;
 }
+
+export type PlatesResult = { ok: true; plates: { plate: string; nickname: string }[] } | { ok: false; error: string };
 
 export type AttemptResult = { kind: "skipped"; why: string } | BookingOutcome;
 
@@ -114,17 +120,50 @@ export class AccountAgent extends DurableObject<Env> {
     });
   }
 
+  private async gatedSession() {
+    return new InflowSession("alta", await InflowSession.welcome("alta"), () => this.idToken());
+  }
+
+  private static platesOf(a: InflowUser) {
+    return (a.savedPlates ?? []).map((p) => ({ plate: p.plate, nickname: p.nickname ?? "" }));
+  }
+
   private async profileUnlocked() {
-    const s = new InflowSession("alta", await InflowSession.welcome("alta"), () => this.idToken());
-    const a = (await s.account()) as { first?: string; savedPlates?: { plate: string; nickname?: string }[] };
-    return {
-      firstName: a.first ?? "",
-      plates: (a.savedPlates ?? []).map((p) => ({ plate: p.plate, nickname: p.nickname ?? "" })),
-    };
+    const a = await (await this.gatedSession()).account();
+    return { firstName: a.first ?? "", plates: AccountAgent.platesOf(a) };
   }
 
   async profile() {
     return this.serial(() => this.profileUnlocked());
+  }
+
+  /**
+   * Edit the saved plates on the Inflow account. Inflow only accepts a whole user record, so this re-reads
+   * `/account` and sends it back unchanged apart from `savedPlates`. Nothing is stored on our side.
+   */
+  private editPlates(edit: (plates: NonNullable<InflowUser["savedPlates"]>) => NonNullable<InflowUser["savedPlates"]>) {
+    return this.serial(async (): Promise<PlatesResult> => {
+      const s = await this.gatedSession();
+      const user = await s.account();
+      const next = edit(user.savedPlates ?? []);
+      try {
+        await s.updateAppUser({ ...user, savedPlates: next });
+      } catch (e) {
+        console.error(JSON.stringify({ event: "appuser_put_failed", error: String(e) }));
+        return { ok: false, error: `Inflow didn't save it (${e instanceof InflowError ? (e.failReason ?? e.status) : "no response"}).` };
+      }
+      return { ok: true, plates: AccountAgent.platesOf({ savedPlates: next }) };
+    });
+  }
+
+  addPlate(plate: string) {
+    return this.editPlates((ps) =>
+      ps.some((p) => p.plate === plate) ? ps : [...ps, { plate, nickname: "", state: "XX", lastUsed: new Date().toISOString() }],
+    );
+  }
+
+  removePlate(plate: string) {
+    return this.editPlates((ps) => ps.filter((p) => p.plate !== plate));
   }
 
   async health() {
@@ -298,7 +337,11 @@ export class AccountAgent extends DurableObject<Env> {
       b.chatId,
       `🎉 Booked <b>${LOTS[b.lot].name}</b> · ${prettyDate(b.date)} · $${b.amount} · ${esc(b.plate)}` +
         (res ? `\nConfirmation <code>${esc(res.confirmationNumber)}</code> · free cancel until 8:00am` : ""),
-      { keyboard: res ? [[{ text: "❌ Cancel", callback_data: `bx:${res.reservationID}` }]] : undefined },
+      {
+        keyboard: res
+          ? [[{ text: "🚘 Change plate", callback_data: `bpa:${res.reservationID}` }, { text: "❌ Cancel", callback_data: `bx:${res.reservationID}` }]]
+          : undefined,
+      },
     );
   }
 
@@ -391,6 +434,8 @@ export class AccountAgent extends DurableObject<Env> {
             locationID: String(r.locationID ?? locationID),
             enterpriseID: String(r.enterpriseID ?? "IPCCO"),
             rateName: String(r.inventoryTreeRateName ?? ""),
+            receiptID: String((r.receiptIDs as string[] | undefined)?.at(-1) ?? ""),
+            allowPlateChangeUntil: r.allowPlateChangeUntil ? String(r.allowPlateChangeUntil) : null,
           });
         }
       }),
@@ -412,6 +457,27 @@ export class AccountAgent extends DurableObject<Env> {
       await s.cancelReservation({ reservationID, locationID: r.locationID, enterpriseID: r.enterpriseID });
       await db(this.env.DB).update(bookings).set({ status: "cancelled" }).where(eq(bookings.inflowReservationId, reservationID));
       return { ok: true as const, reservation: r };
+    });
+  }
+
+  /** Change the plate on one of this user's active reservations. */
+  async changePlate(reservationID: string, newPlate: string) {
+    return this.serial(async () => {
+      const r = (await this.reservationsUnlocked()).find((x) => x.reservationID === reservationID);
+      if (!r) return { ok: false as const, error: "Reservation not found (cancelled?)" };
+      if (r.plate === newPlate) return { ok: true as const, reservation: r };
+      if (!canChangePlate(r)) return { ok: false as const, error: plateUpdateError("WindowClosed", newPlate), reservation: r };
+      if (!r.receiptID) return { ok: false as const, error: "Inflow didn't return a receipt for this reservation.", reservation: r };
+      const lot = r.lot === "solitude-nordic" ? "solitude" : r.lot;
+      const s = new InflowSession(lot, await InflowSession.welcome(lot), () => this.idToken());
+      try {
+        await s.plateUpdate({ newPlate, reservationID, receiptID: r.receiptID });
+      } catch (e) {
+        console.error(JSON.stringify({ event: "plate_update_failed", error: String(e) }));
+        return { ok: false as const, error: plateUpdateError(e instanceof InflowError ? e.failReason : undefined, newPlate), reservation: r };
+      }
+      await db(this.env.DB).update(bookings).set({ plate: newPlate }).where(eq(bookings.inflowReservationId, reservationID));
+      return { ok: true as const, reservation: { ...r, plate: newPlate } };
     });
   }
 }

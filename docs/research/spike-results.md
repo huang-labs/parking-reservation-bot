@@ -25,3 +25,17 @@ Alta, Sat 2026-12-12, $25, booked and then cancelled. The refund settled.
 - Booking takes about 6–8 sequential calls of ~0.3–2 s each (`/payment-intent` ≈ 2 s), so roughly 5–8 s from spotting a spot to holding and paying. Durable Objects handle that easily.
 - `/calendar-rates` depends on session state, so each `AccountAgent` must call `/calendar-availability` before `/calendar-rates` in its own session.
 - Passholder access codes, carpool rates and the `SetupIntent` flow were not exercised. Test them when a friend with a pass or carpool joins.
+
+## Plates (2026-11-14)
+
+Run on the owner's account with a one-off script (same `src/inflow` client). The account ended exactly as it
+started: one saved plate, and the one reservation on its original plate. Nothing was booked or charged.
+
+| Question | Result |
+|---|---|
+| Add / remove a saved plate | ✅ gated `PUT /appuser` with `/account`'s record + edited `savedPlates` → `200 {appUser}`. Re-reading `/account` showed only `savedPlates` changed, both ways. |
+| `/plate-update` | ✅ `{newPlate, reservationID, receiptID}` → `200 {newReceiptMini}`. The reservation's `plate` changed and `receiptIDs` did not. Changing it back worked too. |
+| `/plate-update` auth | ⚠️ Succeeded with **no** welcome Bearer and no `cognitoIDToken`. |
+| Plate deadline | `allowPlateChangeUntil` = reservation end (Alta 1:00pm), not the 8:00am cancel cutoff. |
+
+Not exercised: the `ReservationExistsForPlate`, `WindowClosed` and `/appuser` failure paths (covered by fakes only).

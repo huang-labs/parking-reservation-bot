@@ -11,15 +11,23 @@ export interface Scenario {
   stripeStatus?: "succeeded" | "requires_action";
   cognitoFail?: boolean;
   holdSentinel?: boolean;
+  /** Saved plates on the fake Inflow account; mutated by `PUT /appuser`. */
+  savedPlates?: { plate: string; nickname?: string; state?: string; lastUsed?: string }[];
+  appUserFail?: string;
+  /** Reservations returned by `/current-reservations` (filtered by `locationID`); `/plate-update` edits them. */
+  reservations?: Record<string, unknown>[];
+  plateUpdateFail?: string;
 }
 
 export interface Recorder {
-  calls: { url: string; path: string; body: any }[];
+  calls: { url: string; path: string; method: string; body: any }[];
   telegram: { method: string; body: any }[];
 }
 
 export function installFake(s: Scenario): Recorder {
   const rec: Recorder = { calls: [], telegram: [] };
+  s.savedPlates ??= [{ plate: "ABC123", nickname: "Car" }];
+  s.reservations ??= [];
   const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
   const fail = (failReason: string) => ok({ failReason });
   const exp = Math.floor(Date.now() / 1000) + 86_400;
@@ -33,7 +41,7 @@ export function installFake(s: Scenario): Recorder {
     } catch {
       body = Object.fromEntries(new URLSearchParams(raw));
     }
-    rec.calls.push({ url: url.href, path: url.pathname, body });
+    rec.calls.push({ url: url.href, path: url.pathname, method: init?.method ?? "GET", body });
 
     if (url.hostname === "api.telegram.org") {
       const method = url.pathname.split("/").pop()!;
@@ -60,7 +68,7 @@ export function installFake(s: Scenario): Recorder {
     if (url.hostname === "reserve.prod.inflowservice.com" || url.hostname === "gated.prod.inflowservice.com") {
       switch (url.pathname) {
         case "/welcome":
-          return ok({ sessionToken: fakeJwt({ locationID: "LOC", enterpriseID: "IPCCO", exp }) });
+          return ok({ sessionToken: fakeJwt({ locationID: `LOC-${body.qr}`, enterpriseID: "IPCCO", exp }) });
         case "/apply-code":
           return ok({});
         case "/calendars":
@@ -103,9 +111,22 @@ export function installFake(s: Scenario): Recorder {
         case "/confirm-setup-intent":
           return ok({ receiptID: "RCPT1" });
         case "/current-reservations":
-          return ok({ reservations: [] });
+          return ok({ reservations: s.reservations!.filter((r) => !body.locationID || r.locationID === body.locationID) });
+        case "/plate-update": {
+          if (s.plateUpdateFail) return fail(s.plateUpdateFail);
+          const r = s.reservations!.find((x) => x.reservationID === body.reservationID);
+          if (!r || (r.receiptIDs as string[]).at(-1) !== body.receiptID) return fail("Unauthorized");
+          r.plate = body.newPlate;
+          return ok({ newReceiptMini: { plate: body.newPlate } });
+        }
         case "/account":
-          return ok({ first: "Test", savedPlates: [{ plate: "ABC123", nickname: "Car" }] });
+          return ok({ first: "Test", phone: "+15550000000", savedPlates: s.savedPlates });
+        case "/appuser": {
+          if (init?.method !== "PUT") break;
+          if (s.appUserFail) return fail(s.appUserFail);
+          s.savedPlates = body.savedPlates;
+          return ok({ appUser: { ...body, cognitoIDToken: undefined } });
+        }
       }
     }
     return new Response(`unhandled ${url.href}`, { status: 599 });

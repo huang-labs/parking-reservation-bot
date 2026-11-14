@@ -31,7 +31,7 @@ Out of scope: Alta early-morning (Honk), date ranges, cross-resort fallback list
 | ToS | Automation violates Inflow ToS. Accepted moderate risk. Traffic stays human-paced and deduplicated (one poll per lot-date regardless of watcher count). If a captcha ever appears, we do not solve it — degrade to notify mode. |
 | Payment | Hold → try headless Stripe confirm with saved card → if `requires_action` (3DS) or failure, push "💳 Pay now" with hold countdown. Free rates skip Stripe. |
 | Rate prefs | Per-user prefs (pass access keys, carpool per lot); watch may override. Bot picks the cheapest rate the user qualifies for. |
-| Plate | Default plate picked from Inflow `savedPlates` at onboarding; watch may override. |
+| Plate | The list of saved plates lives only on Inflow (`savedPlates`); the bot adds and removes them there and stores none itself. The bot keeps one default plate per user, and a watch may set its own plate when it is created. A booked reservation's plate changes through Inflow `/plate-update`. |
 | Polling identity | A dedicated **scout** Inflow account does all availability reads. If it fails, polling pauses and admin is alerted; never fall back to friends' accounts. |
 | Storage | D1 = system of record. Durable Objects (SQLite) = live coordination. No KV. |
 | Stack | TypeScript, Workers (Paid plan, owner's account), grammY, Drizzle (D1), Vitest + `@cloudflare/vitest-pool-workers`. |
@@ -194,8 +194,8 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 
 **Onboarding** — `/start <code>`:
 1. "Welcome! First, connect your Inflow account." `[🔐 Log in to Inflow]` (Mini App).
-2. On success: "Pick your default plate:" `[ABC123] [XYZ789]` (from `savedPlates`; if
-   none: "Add a plate in the Inflow app, then tap [🔄 Retry]").
+2. On success: with exactly one saved plate, it becomes the default. Otherwise the `/settings`
+   plate screen (below) asks the user to pick a default, or to add a plate first.
 3. "Any passes or carpool?" toggles: `[Alta access key…] [Brighton carpool ☐] [Solitude carpool ☐]` `[Done]`.
 4. "All set. Tap /watch to start."
 
@@ -204,7 +204,9 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 2. Month calendar (inline keyboard, `‹ Jan 2027 ›`), days marked
    🟢 available · 🔴 full · 🟡 full-but-holds · 👀 already watching · ⚪ n/a.
    Tapping toggles selection (✅). `[✅ Watch 3 dates]` `[⚙️ Options]`
-3. Options: mode `auto`/`notify`, plate, rate override.
+3. Options: mode `auto`/`notify`, carpool, and `🚘 Plate`. The plate picker offers the default
+   plus the saved plates (no adding here). The chosen plate is stored on each new watch. To
+   change a watch's plate later, delete the watch and watch the date again.
 4. Confirmation: "Watching Alta: Sat Jan 16, Sun Jan 17, Sat Jan 23 · auto-book."
    If a picked date is 🟢 right now: "Jan 23 has spots now — [⚡ Book now]".
 
@@ -212,9 +214,27 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 `Sat Jan 16 · Alta · auto · polling 60s` `[⏸] [⚙️] [🗑]`; paused rows show reason + `[▶️ Resume]`.
 
 **`/bookings`** — from `/current-reservations` per lot:
-`Sat Jan 16 · Alta · ABC123 · #CONF123 · cancel by 8:00am` `[❌ Cancel]` (confirm step).
+`Sat Jan 16 · Alta · ABC123 · #CONF123` / `plate changeable until 1:00pm` (or `plate locked`)
+`[🚘 Plate · Jan 16] [❌ Cancel · Jan 16]`. Cancel has a confirm step.
+- **🚘 Plate** shows while Inflow allows a change: before `allowPlateChangeUntil` (the end of the
+  reservation window, later than the 8am cancel cutoff), or any time while the reservation has no plate yet.
+- It opens a picker of saved plates, then a confirm step ("ABC123 → XYZ789?").
+- The bot then calls `/plate-update` with the latest receipt, and re-renders the list with the
+  result or Inflow's reason in plain words.
 
-**`/settings`** — plate, access keys, carpool toggles, `[🔐 Re-login]`, `[🚪 Logout & wipe]`.
+**`/settings`** — default plate, access keys, carpool toggles, `[🚘 Plates]`, `[🔐 Re-login]`, `[🚪 Logout & wipe]`.
+
+**`/settings` → 🚘 Plates** shows the Inflow account's saved plates, one per row:
+`[⭐ ABC123 · default] [🗑]`, `[XYZ789] [🗑]`, then `[➕ Add plate] [↩︎ Back]`.
+- **Tap a plate** to make it the default.
+- **➕ Add plate** asks for the plate as a chat message. The bot uppercases it, keeps letters and digits only,
+  and accepts 2–12 characters (the Inflow app's rule).
+- **🗑** asks for confirmation, then removes the plate.
+- **How saving works:** Inflow only accepts the whole user record (`PUT /appuser`). The bot re-reads
+  `/account` and sends it back unchanged apart from `savedPlates`. If Inflow rejects that, the bot shows
+  the error and keeps nothing.
+- **Default plate:** the first plate added becomes the default if none is set. Removing the default plate
+  clears it, so watches that rely on the default pause with "no plate" until one is picked.
 (Quiet hours: deferred. Non-urgent messages are already sent silently.)
 
 **`/status`** — Inflow login health, scout health, active watches + next poll time.
@@ -223,7 +243,7 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 (list/toggle/add), scout status/re-login, `[🛑 Kill switch]`.
 
 **Push alerts:**
-- `🎉 Booked Alta · Sat Jan 16 · $25 · ABC123` `[View] [❌ Cancel]`
+- `🎉 Booked Alta · Sat Jan 16 · $25 · ABC123` `[🚘 Change plate] [❌ Cancel]`
 - `⏳ Holding Alta Sat Jan 16 — pay within 4:00` `[💳 Pay now]`
 - `👀 Spot open: Brighton Sat Jan 16` `[⚡ Book now]` (notify mode)
 - `⏸ Paused Alta Jan 16: account at max 4 reservations` `[▶️ Resume]`

@@ -1,7 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import { encrypt } from "../src/core/crypto";
-import { addDays, today } from "../src/core/time";
+import { addDays, localToUtc, today } from "../src/core/time";
 import type { Env } from "../src/env";
 import { installFake } from "./fakes";
 
@@ -96,5 +96,20 @@ describe("monitor → agents end to end", () => {
     expect(u?.status).toBe("needs_login");
     const row = await E.DB.prepare("SELECT status FROM watches WHERE id = ?").bind(w).first<{ status: string }>();
     expect(row?.status).toBe("active");
+  });
+
+  it("offers Change plate and Cancel on the booked alert", async () => {
+    const date = addDays(today(), 12);
+    const rec = installFake({
+      availability: "Available",
+      rates: [{ id: "r1", name: "Daytime", price: 25 }],
+      reservations: [
+        { reservationID: "R9", status: "Active", startDateTime: new Date(localToUtc(date, "08:00")).toISOString(), plate: "ABC123", confirmationNumber: "C9", receiptIDs: ["RC9"], locationID: "LOC-altaparking" },
+      ],
+    });
+    const w = await seed(501, date);
+    expect((await E.ACCOUNT.get(E.ACCOUNT.idFromName("501")).attempt(w)).kind).toBe("booked");
+    const msg = rec.telegram.find((m) => m.body.chat_id === 501 && String(m.body.text).startsWith("🎉"));
+    expect(msg?.body.reply_markup.inline_keyboard[0].map((b: { callback_data: string }) => b.callback_data)).toEqual(["bpa:R9", "bx:R9"]);
   });
 });
