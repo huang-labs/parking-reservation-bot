@@ -130,6 +130,9 @@ describe("plates in /settings", () => {
     expect(putBodies(rec)).toHaveLength(0);
 
     await text(70, "xyz-789");
+    expect(buttons(lastOut(rec)).map((b) => b.callback_data)).toEqual(["pad:XYZ789", "sp"]);
+    expect(putBodies(rec)).toHaveLength(0); // nothing written until confirmed
+    await tap(70, "pad:XYZ789");
     const [put] = putBodies(rec);
     expect(put.phone).toBe("+15550000000"); // re-sent unchanged
     expect(put.savedPlates.map((p: any) => p.plate)).toEqual(["ABC123", "XYZ789"]);
@@ -146,13 +149,34 @@ describe("plates in /settings", () => {
     await seedUser(71, null);
     await tap(71, "pa");
     await text(71, "abc 123");
+    await tap(71, "pad:ABC123");
     expect(await E.DB.prepare("SELECT default_plate FROM users WHERE tg_user_id = 71").first()).toMatchObject({ default_plate: "ABC123" });
 
     const rec2 = installFake({ availability: "Full", rates: [], appUserFail: "SystemError" });
     await tap(71, "pa");
     await text(71, "NEW1");
+    await tap(71, "pad:NEW1");
     expect(lastOut(rec2).text).toContain("Inflow didn't save it (SystemError)");
     expect(rec.calls.length).toBeGreaterThan(0);
+  });
+
+  it("ignores stray text once the add-plate request has lapsed", async () => {
+    const rec = installFake({ availability: "Full", rates: [] });
+    await seedUser(73);
+    await tap(73, "pa");
+    await E.DB.prepare("UPDATE ui_state SET json = ? WHERE tg_user_id = 73").bind(JSON.stringify({ awaiting: { kind: "plate", at: Date.now() - 11 * 60_000 } })).run();
+    await text(73, "ok");
+    expect(lastOut(rec).text).toContain("<b>Commands</b>"); // falls through to help
+    expect(buttons(lastOut(rec)).some((b) => b.callback_data.startsWith("pad:"))).toBe(false);
+  });
+
+  it("asks a logged-out user to log in instead of changing a reservation plate", async () => {
+    const rec = installFake({ availability: "Full", rates: [] });
+    await seedUser(74);
+    await E.DB.prepare("UPDATE users SET status = 'needs_login' WHERE tg_user_id = 74").run();
+    await tap(74, "bpy:IPCCO-L-R1:XYZ789");
+    expect(lastOut(rec).text).toContain("log in again");
+    expect(rec.calls.some((c) => c.path === "/plate-update")).toBe(false);
   });
 
   it("removes a plate after confirming, and clears the default when it was the default", async () => {

@@ -28,10 +28,12 @@ type Ctx = Context & { env: Env; d: DB; user: User | null; exec: ExecutionContex
 
 interface UiState {
   draft?: WatchDraft;
-  awaiting?: { kind: "accessKey"; lot: LotKey } | { kind: "plate" };
+  /** `at`: when a typed plate was requested; the request lapses after PLATE_ENTRY_MS. */
+  awaiting?: { kind: "accessKey"; lot: LotKey } | { kind: "plate"; at: number };
 }
 
 let botInfo: UserFromGetMe | undefined;
+const PLATE_ENTRY_MS = 10 * 60_000;
 
 const markup = (keyboard: Keyboard) => ({ reply_markup: { inline_keyboard: keyboard } as never });
 const isLot = (s: string): s is LotKey => s in LOTS;
@@ -314,6 +316,7 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     else await ctx.reply(v.text, { parse_mode: "HTML", ...markup(v.keyboard) });
   });
   bot.callbackQuery(/^bc:(.+):([A-Z0-9]+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
     await ctx.answerCallbackQuery();
     const r = (await account(env, ctx.user!.tgUserId).reservations()).find((x) => x.reservationID === ctx.match[1]);
     if (!r) return showBookings(ctx, "Reservation not found (cancelled?)");
@@ -324,6 +327,7 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     );
   });
   bot.callbackQuery(/^bpy:(.+):([A-Z0-9]+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
     await ctx.answerCallbackQuery("Changing plate…");
     const r = await account(env, ctx.user!.tgUserId).changePlate(ctx.match[1]!, ctx.match[2]!);
     const header = r.ok
@@ -378,6 +382,7 @@ export function makeBot(env: Env, exec: ExecutionContext) {
   });
   bot.callbackQuery("sb", (ctx) => refreshSettings(ctx));
   bot.callbackQuery(/^pl:(.+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
     await ctx.d.update(users).set({ defaultPlate: ctx.match[1]!, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
     await ctx.answerCallbackQuery(`Default plate: ${ctx.match[1]}`);
     await showPlates(ctx);
@@ -385,10 +390,24 @@ export function makeBot(env: Env, exec: ExecutionContext) {
   bot.callbackQuery("pa", async (ctx) => {
     if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
     const ui = await loadUi(ctx.d, ctx.user!.tgUserId);
-    ui.awaiting = { kind: "plate" };
+    ui.awaiting = { kind: "plate", at: Date.now() };
     await saveUi(ctx.d, ctx.user!.tgUserId, ui);
     await ctx.answerCallbackQuery();
     await ctx.reply("Send the plate number (letters and digits, e.g. <code>ABC123</code>), or /cancel.", { parse_mode: "HTML" });
+  });
+  // Typed plates are confirmed before anything is written to Inflow.
+  bot.callbackQuery(/^pad:([A-Z0-9]+)$/, async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery("Saving…");
+    const plate = ctx.match[1]!;
+    const r = await account(env, ctx.user!.tgUserId).addPlate(plate);
+    if (!r.ok) return showPlates(ctx, `❌ ${esc(r.error)} Nothing was saved.`);
+    let header = `✅ Added <b>${esc(plate)}</b> to your Inflow account.`;
+    if (!ctx.user!.defaultPlate) {
+      await ctx.d.update(users).set({ defaultPlate: plate, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
+      header += " It's your default plate.";
+    }
+    await showPlates(ctx, header, r.plates);
   });
   bot.callbackQuery(/^pr:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -586,19 +605,20 @@ export function makeBot(env: Env, exec: ExecutionContext) {
       return ctx.reply(`🔑 Saved your ${lotName(lot)} access key. I'll apply it when booking.`);
     }
     if (ui.awaiting?.kind === "plate") {
-      const plate = normalizePlate(ctx.message.text);
-      if (!plate) return ctx.reply("That doesn't look like a plate: use 2–12 letters and digits. Try again, or /cancel.");
-      delete ui.awaiting;
-      await saveUi(ctx.d, ctx.user!.tgUserId, ui);
-      await ctx.replyWithChatAction("typing");
-      const r = await account(env, ctx.user!.tgUserId).addPlate(plate);
-      if (!r.ok) return ctx.reply(`❌ ${esc(r.error)} Nothing was saved.`, { parse_mode: "HTML" });
-      let header = `✅ Added <b>${esc(plate)}</b> to your Inflow account.`;
-      if (!ctx.user!.defaultPlate) {
-        await ctx.d.update(users).set({ defaultPlate: plate, updatedAt: now() }).where(eq(users.tgUserId, ctx.user!.tgUserId));
-        header += " It's your default plate.";
+      const expired = Date.now() - ui.awaiting.at > PLATE_ENTRY_MS;
+      if (expired) {
+        delete ui.awaiting;
+        await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+      } else {
+        const plate = normalizePlate(ctx.message.text);
+        if (!plate) return ctx.reply("That doesn't look like a plate: use 2–12 letters and digits. Try again, or /cancel.");
+        delete ui.awaiting;
+        await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+        return ctx.reply(`Add <b>${esc(plate)}</b> to your Inflow account?`, {
+          parse_mode: "HTML",
+          ...markup([[{ text: "Add", callback_data: `pad:${plate}` }, { text: "Cancel", callback_data: "sp" }]]),
+        });
       }
-      return showPlates(ctx, header, r.plates);
     }
     await ctx.reply(HELP, { parse_mode: "HTML" });
   });

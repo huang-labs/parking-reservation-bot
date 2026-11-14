@@ -228,7 +228,8 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 `[⭐ ABC123 · default] [🗑]`, `[XYZ789] [🗑]`, then `[➕ Add plate] [↩︎ Back]`.
 - **Tap a plate** to make it the default.
 - **➕ Add plate** asks for the plate as a chat message. The bot uppercases it, keeps letters and digits only,
-  and accepts 2–12 characters (the Inflow app's rule).
+  and accepts 2–12 characters (the Inflow app's rule). It then asks "Add XYZ789 to your Inflow account?"
+  `[Add] [Cancel]`. If no plate arrives within 10 minutes, the request lapses and later text is ignored.
 - **🗑** asks for confirmation, then removes the plate.
 - **How saving works:** Inflow only accepts the whole user record (`PUT /appuser`). The bot re-reads
   `/account` and sends it back unchanged apart from `savedPlates`. If Inflow rejects that, the bot shows
