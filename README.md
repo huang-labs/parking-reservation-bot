@@ -15,7 +15,10 @@ the moment someone cancels. It runs on Cloudflare Workers, D1, and Durable Objec
 2. The friend taps **🔐 Log in to Inflow** (a Mini App, so the password never appears in chat) and picks a default plate.
 3. Optional: in **/settings**, the friend adds a passholder access key per lot and toggles 4+ carpool.
 4. The friend runs **/watch**, picks a lot, taps the sold-out dates (🔴/🟡), and taps ✅. The bot books automatically
-   when a spot opens. If the bank asks for 3-D Secure, the friend gets a **💳 Pay now** button and has the rest of the 10-minute hold to pay.
+   when a spot opens, paying with the card saved on their Inflow account. If the bank asks for 3-D Secure, there is no saved card,
+   or the card is declined, the friend gets a **💳 Pay now** button and has the rest of the 10-minute hold to pay. If a hold with no
+   usable card expires unpaid, that date switches to 🔔 alerts so the bot stops holding spots nobody can pay for; after fixing the card
+   on inflowparking.com, the friend switches it back to ⚡ auto-book in **/watches**.
 
 Other commands: `/watches` (pause, resume, mode, delete), `/bookings` (list and cancel), `/status`, `/help`.
 Admin only: `/admin` (invites, users, release windows, scout re-login, 🛑 kill switch) and `/addwindow`.

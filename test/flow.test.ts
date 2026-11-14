@@ -87,6 +87,34 @@ describe("monitor → agents end to end", () => {
     expect(msg?.body.reply_markup.inline_keyboard[0][0].web_app.url).toMatch(/^https:\/\/bot\.test\/miniapp\/pay\?t=/);
   });
 
+  it("switches an auto watch to notify when a no-card hold expires unpaid, so it stops re-holding", async () => {
+    const rec = installFake({ availability: "Available", rates: [{ id: "r1", name: "Daytime", price: 25 }], noCards: true });
+    const w = await seed(302, date);
+    const agent = E.ACCOUNT.get(E.ACCOUNT.idFromName("302"));
+    const out = await agent.attempt(w);
+    expect(out).toMatchObject({ kind: "handoff", reason: "NoSavedCard" });
+    const held = rec.telegram.find((m) => m.body.chat_id === 302);
+    expect(held?.body.text).toContain("no card saved on your Inflow account");
+
+    const recExp = installFake({ availability: "Available", rates: [{ id: "r1", name: "Daytime", price: 25 }], noCards: true, confirmFail: "ReservationHoldExpired" });
+    expect(await runDurableObjectAlarm(agent)).toBe(true);
+    const expired = recExp.telegram.find((m) => m.body.chat_id === 302);
+    expect(expired?.body.text).toContain("switched this date to 🔔 alerts");
+    const row = await E.DB.prepare("SELECT status, mode FROM watches WHERE id = ?").bind(w).first<{ status: string; mode: string }>();
+    expect(row).toEqual({ status: "active", mode: "notify" });
+
+    // The next spot is an alert, not another unpaid hold.
+    const rec2 = installFake({ availability: "Available", rates: [{ id: "r1", name: "Daytime", price: 25 }], noCards: true });
+    const mon = E.MONITOR.get(E.MONITOR.idFromName(`alta:${date}`));
+    await mon.ensure("alta", date);
+    await runInDurableObject(mon, async (_o, state) => {
+      await state.storage.put("state", { lot: "alta", date, lastStatus: "Full" });
+    });
+    await runDurableObjectAlarm(mon);
+    expect(rec2.calls.some((c) => c.path === "/select-rate")).toBe(false);
+    expect(rec2.telegram.some((m) => m.body.chat_id === 302 && String(m.body.text).startsWith("👀 Spot open"))).toBe(true);
+  });
+
   it("marks the user needs_login when credentials stop working", async () => {
     const w = await seed(401, date);
     installFake({ availability: "Available", rates: [{ id: "r1", name: "Daytime", price: 25 }], cognitoFail: true });

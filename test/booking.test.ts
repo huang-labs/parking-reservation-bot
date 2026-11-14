@@ -36,6 +36,19 @@ describe("attemptBooking", () => {
     expect(o).toMatchObject({ kind: "handoff", reason: "3DS", clientSecret: "pi_123_secret_abc", setup: false });
   });
 
+  it("hands off with NoSavedCard when the account has no saved card", async () => {
+    const rec = installFake({ ...base, noCards: true });
+    const o = await attemptBooking(req, deps);
+    expect(o).toMatchObject({ kind: "handoff", reason: "NoSavedCard", clientSecret: "pi_123_secret_abc" });
+    expect(rec.calls.some((c) => c.path.endsWith("/confirm"))).toBe(false);
+  });
+
+  it("hands off with Stripe's decline message when the saved card fails", async () => {
+    installFake({ ...base, stripeStatus: "declined" });
+    const o = await attemptBooking(req, deps);
+    expect(o).toMatchObject({ kind: "handoff", reason: "CardFailed", detail: "Your card was declined." });
+  });
+
   it("uses SetupIntent flow for card-hold rates", async () => {
     const rec = installFake({ ...base, paymentFlow: "SetupIntent" });
     expect((await attemptBooking(req, deps)).kind).toBe("booked");
