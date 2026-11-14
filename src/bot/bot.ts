@@ -336,6 +336,7 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     await showBookings(ctx, header);
   });
   bot.callbackQuery("bl", async (ctx) => {
+    if (!(await requireActive(ctx))) return ctx.answerCallbackQuery();
     await ctx.answerCallbackQuery();
     await showBookings(ctx);
   });

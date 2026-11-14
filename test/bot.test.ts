@@ -176,6 +176,8 @@ describe("plates in /settings", () => {
     await E.DB.prepare("UPDATE users SET status = 'needs_login' WHERE tg_user_id = 74").run();
     await tap(74, "bpy:IPCCO-L-R1:XYZ789");
     expect(lastOut(rec).text).toContain("log in again");
+    await tap(74, "bl");
+    expect(lastOut(rec).text).toContain("log in again");
     expect(rec.calls.some((c) => c.path === "/plate-update")).toBe(false);
   });
 
