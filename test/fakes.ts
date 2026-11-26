@@ -13,6 +13,9 @@ export interface Scenario {
   confirmFail?: string; // failReason for /confirm-payment (e.g. an unpaid hold that expired)
   cognitoFail?: boolean;
   holdSentinel?: boolean;
+  /** Raw ReservationMini rows for `/current-reservations` (filtered by `locationID`, which is `LOC-<qr>`); `/plate-update` edits them. */
+  reservations?: Record<string, unknown>[];
+  plateUpdateFail?: string; // failReason for /plate-update
 }
 
 export interface Recorder {
@@ -65,7 +68,7 @@ export function installFake(s: Scenario): Recorder {
     if (url.hostname === "reserve.prod.inflowservice.com" || url.hostname === "gated.prod.inflowservice.com") {
       switch (url.pathname) {
         case "/welcome":
-          return ok({ sessionToken: fakeJwt({ locationID: "LOC", enterpriseID: "IPCCO", exp }) });
+          return ok({ sessionToken: fakeJwt({ locationID: `LOC-${body.qr}`, enterpriseID: "IPCCO", exp }) });
         case "/apply-code":
           return ok({});
         case "/calendars":
@@ -108,7 +111,14 @@ export function installFake(s: Scenario): Recorder {
         case "/confirm-setup-intent":
           return s.confirmFail ? fail(s.confirmFail) : ok({ receiptID: "RCPT1" });
         case "/current-reservations":
-          return ok({ reservations: [] });
+          return ok({ reservations: (s.reservations ?? []).filter((r) => !body.locationID || r.locationID === body.locationID) });
+        case "/plate-update": {
+          if (s.plateUpdateFail) return fail(s.plateUpdateFail);
+          const r = s.reservations?.find((x) => x.reservationID === body.reservationID);
+          if (!r || (r.receiptIDs as string[]).at(-1) !== body.receiptID) return fail("Unauthorized");
+          r.plate = body.newPlate;
+          return ok({ newReceiptMini: { plate: body.newPlate } });
+        }
         case "/account":
           return ok({ first: "Test", savedPlates: [{ plate: "ABC123", nickname: "Car" }] });
       }

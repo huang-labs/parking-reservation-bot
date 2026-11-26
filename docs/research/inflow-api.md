@@ -107,7 +107,7 @@ Headers the SPA sends: `Accept: application/json`, `Content-Type: application/js
 | `POST /current-reservations` | `{cognitoIDToken, locationID\|null}` | Returns `{reservations: ReservationMini[]}`. |
 | `POST /past-reservations` | same | |
 | `POST /cancel-reservation` | `{cognitoIDToken, reservationID, locationID, enterpriseID}` | Fail reason: `CancellationBlocked`. |
-| `POST /plate-update` | | Fail reasons: `WindowClosed`, `ReservationExistsForPlate`, `ReservationNotActive`. |
+| `POST /plate-update` | `{newPlate, reservationID, receiptID}` | Changes the plate on a booked reservation. `receiptID` is the last entry of the reservation's `receiptIDs`. Returns `{newReceiptMini}`; `receiptIDs` stay the same. The plate need not be saved on the account. **Verified 2026-11-14** on the owner's account (changed and changed back). It also succeeded with no Bearer and no `cognitoIDToken`, so Inflow appears to authorize it by reservation and receipt ID alone; the bot only calls it for reservations just read from the user's own `/current-reservations`. Fail reasons: `WindowClosed`, `InvalidPlate`, `ReservationExistsForPlate`, `ReservationNotActive`, `Unauthorized`, `SystemError`, `InvalidRequestFormat`. |
 
 Shared or gated endpoints: `/account` (`{cognitoIDToken}` returns the inflowUser, including savedPlates), `/appuser` (PUT), `/saved-payment-methods`,
 `/saved-payment-method-actions` (ADD / DELETE / MAKE_DEFAULT), `/setup-intent-wallet`, `/confirm-setup-intent-wallet`,
@@ -124,7 +124,9 @@ Shared or gated endpoints: `/account` (`{cognitoIDToken}` returns the inflowUser
   autoApplyPromotions[]...}`. The response has no remaining-count field; it only gives a status.
 - `ReservationMini`: `reservationID, status (Active|CancelledBySelf|CancelledByAdmin|Expired), startDateTime, endDateTime,
   plate, cancellationDeadline, blockCancellation, allowPlateChangeUntil, bookingCalendarName, inventoryTreeRateName,
-  confirmationNumber, receiptIDs, locationID, enterpriseID, locationTimezone`.
+  confirmationNumber, receiptIDs, locationID, enterpriseID, locationTimezone`. The SPA (`canChangeVehicle`) allows a plate change on an
+  upcoming reservation any time if it has no plate (empty or `UNKNOWN…`), otherwise until `allowPlateChangeUntil`. On Alta that is the
+  reservation end (1:00pm), later than the 8:00am cancel cutoff. Plates are uppercased with non-alphanumerics stripped, 2–18 chars.
 - `ReservationHoldStatus`: `Held | Confirmed | Expired | Released`. `ReleasePhaseType`: `Always | SpecificDate | DaysBefore | Weekday`.
 - `BookingCalendarLimitPerPlate`: `OnePerDay | Unrestricted`. `RateRestrictionType`: `PerPlate | PerAccount | NumberOfSales`.
 

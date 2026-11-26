@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CADENCE, nextPollDelay } from "../src/core/cadence";
 import { decrypt, encrypt } from "../src/core/crypto";
+import { normalizePlate } from "../src/core/plate";
 import { chooseRate } from "../src/core/rates";
 import { verifyInitData } from "../src/core/telegramAuth";
 import { localParts, localToUtc, watchDeadline } from "../src/core/time";
@@ -99,5 +100,13 @@ describe("settings view", () => {
   it("labels each section and shows current state", () => {
     expect(view.text).toContain("<b>Carpool (4+)</b>: Brighton");
     expect(view.text).toContain("<b>Access keys</b>: Alta");
+  });
+});
+
+describe("normalizePlate", () => {
+  it("uppercases and strips non-alphanumerics like the Inflow app", () => {
+    expect(normalizePlate(" abc-123 ")).toBe("ABC123");
+    expect(normalizePlate("a")).toBeNull();
+    expect(normalizePlate("A".repeat(19))).toBeNull();
   });
 });

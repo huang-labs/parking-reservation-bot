@@ -20,7 +20,7 @@ the moment someone cancels. It runs on Cloudflare Workers, D1, and Durable Objec
    usable card expires unpaid, that date switches to 🔔 alerts so the bot stops holding spots nobody can pay for; after fixing the card
    on inflowparking.com, the friend switches it back to ⚡ auto-book in **/watches**.
 
-Other commands: `/watches` (pause, resume, mode, delete), `/bookings` (list and cancel), `/status`, `/help`.
+Other commands: `/watches` (pause, resume, mode, delete), `/bookings` (list, cancel, or change one reservation's plate; the default plate in `/settings` is unchanged), `/status`, `/help`.
 Admin only: `/admin` (invites, users, release windows, scout re-login, 🛑 kill switch) and `/addwindow`.
 
 ## Develop
