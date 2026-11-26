@@ -24,7 +24,7 @@ type Ctx = Context & { env: Env; d: DB; user: User | null; exec: ExecutionContex
 
 interface UiState {
   draft?: WatchDraft;
-  awaiting?: { kind: "accessKey"; lot: LotKey };
+  awaiting?: { kind: "accessKey"; lot: LotKey } | { kind: "plate"; reservationID: string };
 }
 
 let botInfo: UserFromGetMe | undefined;
@@ -268,6 +268,7 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     const kb: Keyboard = [];
     for (const r of list) {
       lines.push(`🅿️ ${prettyDate(r.date)} · ${lotName(r.lot)} · ${esc(r.plate)} · <code>${esc(r.confirmationNumber)}</code>`);
+      if (r.plateChangeable) kb.push([{ text: `🚘 Change plate ${prettyDate(r.date)} ${lotName(r.lot)}`, callback_data: `bp:${r.reservationID}` }]);
       if (!r.blockCancellation) kb.push([{ text: `❌ Cancel ${prettyDate(r.date)} ${lotName(r.lot)}`, callback_data: `bx:${r.reservationID}` }]);
     }
     await ctx.reply(lines.join("\n") + "\n\nFree cancellation until 8:00am on the day.", { parse_mode: "HTML", ...markup(kb) });
@@ -284,6 +285,21 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     await ctx.answerCallbackQuery("Cancelling…");
     const r = await account(env, ctx.user!.tgUserId).cancel(ctx.match[1]!);
     await ctx.editMessageText(r.ok ? `✅ Cancelled ${lotName(r.reservation.lot)} · ${prettyDate(r.reservation.date)}.` : `❌ ${r.error}`);
+  });
+
+  bot.callbackQuery(/^bp:(.+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    if (!(await requireActive(ctx))) return;
+    const r = (await account(env, ctx.user!.tgUserId).reservations()).find((x) => x.reservationID === ctx.match[1]);
+    if (!r) return ctx.reply("Reservation not found (cancelled?)");
+    if (!r.plateChangeable) return ctx.reply("Inflow no longer allows plate changes for this reservation.");
+    const ui = await loadUi(ctx.d, ctx.user!.tgUserId);
+    ui.awaiting = { kind: "plate", reservationID: r.reservationID };
+    await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+    await ctx.reply(
+      `Send the new plate for <b>${prettyDate(r.date)} · ${lotName(r.lot)}</b> (currently ${esc(r.plate || "none")}), or /cancel.`,
+      { parse_mode: "HTML" },
+    );
   });
 
   // ---------- /settings ----------
@@ -489,6 +505,23 @@ export function makeBot(env: Env, exec: ExecutionContext) {
       await saveUi(ctx.d, ctx.user!.tgUserId, ui);
       await ctx.deleteMessage().catch(() => {});
       return ctx.reply(`🔑 Saved your ${lotName(lot)} access key. I'll apply it when booking.`);
+    }
+    if (ui.awaiting?.kind === "plate") {
+      if (!(await requireActive(ctx))) return;
+      const awaiting = ui.awaiting;
+      // Stop waiting before calling Inflow, so a thrown error can't leave the next message read as a plate.
+      delete ui.awaiting;
+      await saveUi(ctx.d, ctx.user!.tgUserId, ui);
+      await ctx.replyWithChatAction("typing");
+      const r = await account(env, ctx.user!.tgUserId).changePlate(awaiting.reservationID, ctx.message.text);
+      // Keep waiting on a malformed plate so the user can just retype it.
+      if (!r.ok && r.retry) await saveUi(ctx.d, ctx.user!.tgUserId, { ...ui, awaiting });
+      return ctx.reply(
+        r.ok
+          ? `✅ ${lotName(r.reservation.lot)} · ${prettyDate(r.reservation.date)} is now on <b>${esc(r.reservation.plate)}</b>.`
+          : `❌ ${esc(r.error)}${r.retry ? " Try again, or /cancel." : ""}`,
+        { parse_mode: "HTML" },
+      );
     }
     await ctx.reply(HELP, { parse_mode: "HTML" });
   });

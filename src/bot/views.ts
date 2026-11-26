@@ -15,7 +15,7 @@ export const HELP = [
   "<b>Commands</b>",
   "/watch — watch sold-out dates and auto-book when a spot opens",
   "/watches — your watches",
-  "/bookings — your upcoming Inflow reservations",
+  "/bookings — your upcoming Inflow reservations (cancel or change plate)",
   "/settings — plate, passes, carpool, logout",
   "/status — health and next polls",
   "",

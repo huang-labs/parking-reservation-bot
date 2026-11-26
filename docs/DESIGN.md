@@ -31,7 +31,7 @@ Out of scope: Alta early-morning (Honk), date ranges, cross-resort fallback list
 | ToS | Automation violates Inflow ToS. Accepted moderate risk. Traffic stays human-paced and deduplicated (one poll per lot-date regardless of watcher count). If a captcha ever appears, we do not solve it — degrade to notify mode. |
 | Payment | Hold → try headless Stripe confirm with saved card → if `requires_action` (3DS) or failure, push "💳 Pay now" with hold countdown and the reason in plain language (bank verification, no saved card, or Stripe's decline message). Free rates skip Stripe. If a hold handed off for a card problem (`NoSavedCard`, `NoCustomerSession`, `CardFailed`) expires unpaid, that one auto watch switches to `notify`, so it stops taking unpaid holds that block other watchers; the user switches it back in `/watches`. |
 | Rate prefs | Per-user prefs (pass access keys, carpool per lot); watch may override. Bot picks the cheapest rate the user qualifies for. |
-| Plate | Default plate picked from Inflow `savedPlates` at onboarding; watch may override. |
+| Plate | Default plate picked from Inflow `savedPlates` at onboarding; watch may override. A booked reservation's plate can be changed from `/bookings` (that reservation only). |
 | Polling identity | A dedicated **scout** Inflow account does all availability reads. If it fails, polling pauses and admin is alerted; never fall back to friends' accounts. |
 | Storage | D1 = system of record. Durable Objects (SQLite) = live coordination. No KV. |
 | Stack | TypeScript, Workers (Paid plan, owner's account), grammY, Drizzle (D1), Vitest + `@cloudflare/vitest-pool-workers`. |
@@ -214,7 +214,10 @@ Commands (registered via `setMyCommands`): `/watch`, `/watches`, `/bookings`,
 `Sat Jan 16 · Alta · auto · polling 60s` `[⏸] [⚙️] [🗑]`; paused rows show reason + `[▶️ Resume]`.
 
 **`/bookings`** — from `/current-reservations` per lot:
-`Sat Jan 16 · Alta · ABC123 · #CONF123 · cancel by 8:00am` `[❌ Cancel]` (confirm step).
+`Sat Jan 16 · Alta · ABC123 · #CONF123 · cancel by 8:00am` `[🚘 Change plate]` `[❌ Cancel]` (cancel has a confirm step).
+Change plate asks for a typed plate (normalized like the Inflow app: uppercase `A-Z0-9`, 2–18 chars; a malformed
+one is asked for again) and calls `/plate-update` on that one reservation. It doesn't save the plate to the Inflow
+account or touch the default plate or watches. The button shows while Inflow allows the change (`allowPlateChangeUntil`).
 
 **`/settings`** — plate, access keys, carpool toggles, `[🔐 Re-login]`, `[🚪 Logout & wipe]`.
 (Quiet hours: deferred. Non-urgent messages are already sent silently.)

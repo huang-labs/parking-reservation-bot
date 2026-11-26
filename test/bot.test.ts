@@ -1,7 +1,8 @@
-import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, env, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
 import worker from "../src/index";
+import { encrypt } from "../src/core/crypto";
 import { installFake } from "./fakes";
 
 const E = env as unknown as Env;
@@ -98,5 +99,107 @@ describe("telegram webhook", () => {
     expect(done.body.text).toContain("Watching");
     const w = await E.DB.prepare("SELECT lot, date, status, mode FROM watches WHERE tg_user_id = 60").first();
     expect(w).toMatchObject({ lot: "alta", date: day!.callback_data.slice(3), status: "active", mode: "auto" });
+  });
+
+  describe("changing a reservation's plate", () => {
+    const reservation = (over: Record<string, unknown> = {}) => ({
+      reservationID: "RES1",
+      status: "Active",
+      startDateTime: "2027-01-16T15:00:00.000Z",
+      plate: "ABC123",
+      confirmationNumber: "CONF1",
+      receiptIDs: ["RCPT0", "RCPT1"],
+      allowPlateChangeUntil: new Date(Date.now() + 86_400_000).toISOString(),
+      bookingCalendarName: "Alta",
+      locationID: "LOC-altaparking",
+      enterpriseID: "IPCCO",
+      locationTimezone: "America/Denver",
+      ...over,
+    });
+
+    async function connect(uid: number) {
+      const ts = Date.now();
+      await E.DB.prepare(
+        "INSERT INTO users (tg_user_id, chat_id, name, status, inflow_email, default_plate, prefs_json, created_at, updated_at) VALUES (?, ?, 'U', 'active', 'u@test', 'ABC123', '{}', ?, ?)",
+      ).bind(uid, uid, ts, ts).run();
+      await E.DB.prepare(
+        "INSERT INTO bookings (id, tg_user_id, lot, date, inflow_reservation_id, plate, created_at) VALUES (?, ?, 'alta', '2027-01-16', 'RES1', 'ABC123', ?)",
+      ).bind(`b${uid}`, uid, ts).run();
+      const encPassword = await encrypt(E.CREDS_ENC_KEY, "pw", String(uid));
+      await runInDurableObject(E.ACCOUNT.get(E.ACCOUNT.idFromName(String(uid))), async (_o, state) => {
+        await state.storage.put("creds", { tgUserId: uid, email: "u@test", encPassword, refreshToken: "r" });
+      });
+    }
+    const lastText = (rec: { telegram: { method: string; body: any }[] }) =>
+      rec.telegram.filter((m) => m.method === "sendMessage").at(-1)!.body.text as string;
+
+    it("/bookings → Change plate → typed plate updates the reservation", async () => {
+      const s = { availability: "Full", rates: [], reservations: [reservation()] };
+      const rec = installFake(s);
+      await connect(70);
+
+      await text(70, "/bookings");
+      const kb = (rec.telegram.filter((m) => m.method === "sendMessage").at(-1)!.body.reply_markup.inline_keyboard as { callback_data: string }[][]).flat();
+      expect(kb.map((b) => b.callback_data)).toEqual(["bp:RES1", "bx:RES1"]);
+
+      await tap(70, "bp:RES1");
+      expect(lastText(rec)).toContain("currently ABC123");
+
+      await text(70, "x"); // too short: keeps waiting
+      expect(lastText(rec)).toContain("Try again");
+
+      await text(70, "xyz-789");
+      const update = rec.calls.find((c) => c.path === "/plate-update");
+      expect(update?.body).toEqual({ newPlate: "XYZ789", reservationID: "RES1", receiptID: "RCPT1" });
+      expect(lastText(rec)).toContain("now on <b>XYZ789</b>");
+      expect(s.reservations[0]!.plate).toBe("XYZ789");
+      expect(await E.DB.prepare("SELECT plate FROM bookings WHERE tg_user_id = 70").first()).toMatchObject({ plate: "XYZ789" });
+
+      await text(70, "QQQ111"); // no longer waiting for a plate
+      expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
+    });
+
+    it("explains an Inflow refusal and stops waiting", async () => {
+      const rec = installFake({ availability: "Full", rates: [], reservations: [reservation()], plateUpdateFail: "ReservationExistsForPlate" });
+      await connect(71);
+      await tap(71, "bp:RES1");
+      await text(71, "XYZ789");
+      expect(lastText(rec)).toContain("already has a reservation");
+      expect(await E.DB.prepare("SELECT plate FROM bookings WHERE tg_user_id = 71").first()).toMatchObject({ plate: "ABC123" });
+      await text(71, "XYZ789");
+      expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
+    });
+
+    it("falls back to plain text for an unmapped failReason and stops waiting", async () => {
+      const rec = installFake({ availability: "Full", rates: [], reservations: [reservation()], plateUpdateFail: "SystemError" });
+      await connect(73);
+      await tap(73, "bp:RES1");
+      await text(73, "XYZ789");
+      expect(lastText(rec)).toContain("couldn't change the plate (SystemError)");
+      await text(73, "XYZ789");
+      expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
+    });
+
+    it("stops waiting even when the change throws", async () => {
+      const rec = installFake({ availability: "Full", rates: [], reservations: [reservation()], plateUpdateHttp500: true });
+      await connect(74);
+      await tap(74, "bp:RES1");
+      await text(74, "XYZ789");
+      expect(rec.telegram.some((m) => m.method === "sendMessage" && String(m.body.text).includes("unhandled-error"))).toBe(true);
+      await text(74, "XYZ789");
+      expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
+    });
+
+    it("hides the button once the change window has closed", async () => {
+      const rec = installFake({
+        availability: "Full",
+        rates: [],
+        reservations: [reservation({ allowPlateChangeUntil: new Date(Date.now() - 60_000).toISOString() })],
+      });
+      await connect(72);
+      await text(72, "/bookings");
+      const kb = (rec.telegram.filter((m) => m.method === "sendMessage").at(-1)!.body.reply_markup.inline_keyboard as { callback_data: string }[][]).flat();
+      expect(kb.map((b) => b.callback_data)).toEqual(["bx:RES1"]);
+    });
   });
 });

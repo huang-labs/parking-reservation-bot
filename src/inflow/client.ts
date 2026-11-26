@@ -179,6 +179,11 @@ export class InflowSession {
   account() {
     return this.call("/account", {}, { auth: true, base: GATED_API });
   }
+
+  /** Change the plate on a booked reservation. `receiptID` is the last of the reservation's `receiptIDs`. */
+  plateUpdate(args: { newPlate: string; reservationID: string; receiptID: string }) {
+    return this.call("/plate-update", args);
+  }
 }
 
 /** Claims of the (unverified) welcome session JWT: enterpriseID, marketID, locationID, exp... */

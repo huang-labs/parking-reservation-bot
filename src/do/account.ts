@@ -3,11 +3,12 @@ import { and, eq, inArray } from "drizzle-orm";
 import { attemptBooking, type BookingOutcome, CARD_REASONS, type Handoff, pollConfirm } from "../core/booking";
 import { USER_REASON_TEXT } from "../core/classify";
 import { decrypt, encrypt, randomId } from "../core/crypto";
+import { normalizePlate, PLATE_UPDATE_ERRORS } from "../core/plate";
 import { prettyDate } from "../core/time";
 import { db, getUser, getWatch, logEvent, now, prefsOf, transitionWatch } from "../db/repo";
 import { bookings, users, watches } from "../db/schema";
 import type { Env } from "../env";
-import { InflowSession, LOTS, type LotKey, sessionClaims } from "../inflow/client";
+import { InflowError, InflowSession, LOTS, type LotKey, sessionClaims } from "../inflow/client";
 import { CognitoError, jwtClaims, login, refresh } from "../inflow/cognito";
 import { findPublishableKey } from "../inflow/stripe";
 import { esc, send } from "../telegram";
@@ -42,7 +43,16 @@ export interface Reservation {
   locationID: string;
   enterpriseID: string;
   rateName: string;
+  /** Latest entry of Inflow's `receiptIDs`; `/plate-update` needs it. */
+  receiptID: string;
+  /** Inflow still allows a plate change (SPA `canChangeVehicle`: no plate yet, or before `allowPlateChangeUntil`). */
+  plateChangeable: boolean;
 }
+
+/** `retry`: the typed plate was malformed, so the bot keeps waiting for another one. */
+export type PlateChangeResult =
+  | { ok: true; reservation: Reservation }
+  | { ok: false; error: string; retry?: boolean };
 
 export type AttemptResult = { kind: "skipped"; why: string } | BookingOutcome;
 
@@ -420,6 +430,8 @@ export class AccountAgent extends DurableObject<Env> {
             locationID: String(r.locationID ?? locationID),
             enterpriseID: String(r.enterpriseID ?? "IPCCO"),
             rateName: String(r.inventoryTreeRateName ?? ""),
+            receiptID: String((r.receiptIDs as unknown[] | undefined)?.at(-1) ?? ""),
+            plateChangeable: plateChangeable(String(r.plate ?? ""), r.allowPlateChangeUntil),
           });
         }
       }),
@@ -443,4 +455,32 @@ export class AccountAgent extends DurableObject<Env> {
       return { ok: true as const, reservation: r };
     });
   }
+
+  async changePlate(reservationID: string, rawPlate: string): Promise<PlateChangeResult> {
+    const plate = normalizePlate(rawPlate);
+    if (!plate) return { ok: false, error: "A plate is 2–18 letters or numbers.", retry: true };
+    return this.serial(async () => {
+      const r = (await this.reservationsUnlocked()).find((x) => x.reservationID === reservationID);
+      if (!r) return { ok: false, error: "Reservation not found (cancelled?)" };
+      if (!r.plateChangeable || !r.receiptID) return { ok: false, error: PLATE_UPDATE_ERRORS.WindowClosed! };
+      const lot = r.lot === "solitude-nordic" ? "solitude" : r.lot;
+      const s = new InflowSession(lot, await InflowSession.welcome(lot), () => this.idToken());
+      try {
+        await s.plateUpdate({ newPlate: plate, reservationID, receiptID: r.receiptID });
+      } catch (e) {
+        if (!(e instanceof InflowError) || !e.failReason) throw e;
+        const error = PLATE_UPDATE_ERRORS[e.failReason] ?? `Inflow couldn't change the plate (${e.failReason}). Try again from /bookings.`;
+        return { ok: false, error };
+      }
+      await db(this.env.DB).update(bookings).set({ plate }).where(eq(bookings.inflowReservationId, reservationID));
+      return { ok: true, reservation: { ...r, plate } };
+    });
+  }
+}
+
+/** Mirrors the Inflow app: a reservation with no plate (empty or `UNKNOWN…`) can always change; otherwise until the deadline. */
+function plateChangeable(plate: string, until: unknown): boolean {
+  if (!plate || /^UNKNOWN/i.test(plate)) return true;
+  const t = Date.parse(String(until ?? ""));
+  return Number.isNaN(t) || Date.now() < t;
 }
