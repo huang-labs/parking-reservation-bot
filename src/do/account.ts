@@ -468,9 +468,9 @@ export class AccountAgent extends DurableObject<Env> {
       try {
         await s.plateUpdate({ newPlate: plate, reservationID, receiptID: r.receiptID });
       } catch (e) {
-        const text = e instanceof InflowError && e.failReason ? PLATE_UPDATE_ERRORS[e.failReason] : undefined;
-        if (text) return { ok: false, error: text };
-        throw e;
+        if (!(e instanceof InflowError) || !e.failReason) throw e;
+        const error = PLATE_UPDATE_ERRORS[e.failReason] ?? `Inflow couldn't change the plate (${e.failReason}). Try again from /bookings.`;
+        return { ok: false, error };
       }
       await db(this.env.DB).update(bookings).set({ plate }).where(eq(bookings.inflowReservationId, reservationID));
       return { ok: true, reservation: { ...r, plate } };

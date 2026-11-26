@@ -170,6 +170,27 @@ describe("telegram webhook", () => {
       expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
     });
 
+    it("falls back to plain text for an unmapped failReason and stops waiting", async () => {
+      const rec = installFake({ availability: "Full", rates: [], reservations: [reservation()], plateUpdateFail: "SystemError" });
+      await connect(73);
+      await tap(73, "bp:RES1");
+      await text(73, "XYZ789");
+      expect(lastText(rec)).toContain("couldn't change the plate (SystemError)");
+      await text(73, "XYZ789");
+      expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
+    });
+
+    it("stops waiting even when the change throws", async () => {
+      const rec = installFake({ availability: "Full", rates: [], reservations: [reservation()], plateUpdateHttp500: true });
+      await connect(74);
+      await tap(74, "bp:RES1");
+      await text(74, "XYZ789");
+      const toUser = rec.telegram.filter((m) => m.method === "sendMessage" && m.body.chat_id === 74).map((m) => m.body.text as string);
+      expect(toUser.at(-1)).toContain("Something went wrong");
+      await text(74, "XYZ789");
+      expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
+    });
+
     it("hides the button once the change window has closed", async () => {
       const rec = installFake({
         availability: "Full",

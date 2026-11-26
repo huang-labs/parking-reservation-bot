@@ -16,6 +16,7 @@ export interface Scenario {
   /** Raw ReservationMini rows for `/current-reservations` (filtered by `locationID`, which is `LOC-<qr>`); `/plate-update` edits them. */
   reservations?: Record<string, unknown>[];
   plateUpdateFail?: string; // failReason for /plate-update
+  plateUpdateHttp500?: boolean; // /plate-update returns a bare HTTP 500 (no failReason)
 }
 
 export interface Recorder {
@@ -113,6 +114,7 @@ export function installFake(s: Scenario): Recorder {
         case "/current-reservations":
           return ok({ reservations: (s.reservations ?? []).filter((r) => !body.locationID || r.locationID === body.locationID) });
         case "/plate-update": {
+          if (s.plateUpdateHttp500) return new Response("oops", { status: 500 });
           if (s.plateUpdateFail) return fail(s.plateUpdateFail);
           const r = s.reservations?.find((x) => x.reservationID === body.reservationID);
           if (!r || (r.receiptIDs as string[]).at(-1) !== body.receiptID) return fail("Unauthorized");

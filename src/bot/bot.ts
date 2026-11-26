@@ -508,13 +508,14 @@ export function makeBot(env: Env, exec: ExecutionContext) {
     }
     if (ui.awaiting?.kind === "plate") {
       if (!(await requireActive(ctx))) return;
+      const awaiting = ui.awaiting;
+      // Stop waiting before calling Inflow, so a thrown error can't leave the next message read as a plate.
+      delete ui.awaiting;
+      await saveUi(ctx.d, ctx.user!.tgUserId, ui);
       await ctx.replyWithChatAction("typing");
-      const r = await account(env, ctx.user!.tgUserId).changePlate(ui.awaiting.reservationID, ctx.message.text);
+      const r = await account(env, ctx.user!.tgUserId).changePlate(awaiting.reservationID, ctx.message.text);
       // Keep waiting on a malformed plate so the user can just retype it.
-      if (r.ok || !r.retry) {
-        delete ui.awaiting;
-        await saveUi(ctx.d, ctx.user!.tgUserId, ui);
-      }
+      if (!r.ok && r.retry) await saveUi(ctx.d, ctx.user!.tgUserId, { ...ui, awaiting });
       return ctx.reply(
         r.ok
           ? `✅ ${lotName(r.reservation.lot)} · ${prettyDate(r.reservation.date)} is now on <b>${esc(r.reservation.plate)}</b>.`
