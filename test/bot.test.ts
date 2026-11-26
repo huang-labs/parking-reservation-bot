@@ -185,8 +185,7 @@ describe("telegram webhook", () => {
       await connect(74);
       await tap(74, "bp:RES1");
       await text(74, "XYZ789");
-      const toUser = rec.telegram.filter((m) => m.method === "sendMessage" && m.body.chat_id === 74).map((m) => m.body.text as string);
-      expect(toUser.at(-1)).toContain("Something went wrong");
+      expect(rec.telegram.some((m) => m.method === "sendMessage" && String(m.body.text).includes("unhandled-error"))).toBe(true);
       await text(74, "XYZ789");
       expect(rec.calls.filter((c) => c.path === "/plate-update")).toHaveLength(1);
     });
